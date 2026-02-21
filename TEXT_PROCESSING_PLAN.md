@@ -7,7 +7,7 @@ In the next week, we plan to start implementing the text processing pipeline of 
 ## 1. PDF Text Extraction
 
 - We will research and finalize a method for PDF text extraction using libraries like **PyPDF2** or **pdfplumber**.
-- We plan to select one stable method and create a **helper function** that can extract text **page by page**.
+- We plan to select one stable method and create a **helper function** that can extract text **page by page*r*.
 
 ---
 
