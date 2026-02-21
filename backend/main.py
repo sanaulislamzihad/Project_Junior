@@ -8,7 +8,8 @@ from pydantic import BaseModel
 # Import our modules
 from database import DatabaseManager
 from text_pipeline import process_document
-from document_store import save_document, list_documents, delete_document, get_stats, get_chunks_for_scan, DB_PATH
+from document_store import save_document, list_documents, delete_document, get_stats, get_chunks_for_scan, get_chunks_with_embeddings, DB_PATH
+from embedding_pipeline import encode_chunks, find_matches
 
 app = FastAPI(title="NSU PlagiChecker Auth")
 
@@ -152,6 +153,7 @@ async def analyze_document(
     user_id: str = Form(""),
     role: str = Form("teacher"),
     add_to_repo: str = Form("true"),
+    filename_override: str = Form(""),
 ):
     """Extract text from PDF/PPTX, clean, chunk. add_to_repo=true: save to DB; add_to_repo=false: check-only, no save."""
     ext = os.path.splitext(file.filename or "")[1].lower()
@@ -170,10 +172,10 @@ async def analyze_document(
             if not user_id or not user_id.strip():
                 raise HTTPException(status_code=400, detail="user_id required for personal repository.")
     try:
-        owner_id_val = int(user_id.strip()) if will_save and repo_type == "personal" and user_id and user_id.strip() else None
+        owner_id_val = int(user_id.strip()) if repo_type == "personal" and user_id and user_id.strip() else None
     except ValueError:
         owner_id_val = None
-        if will_save and repo_type == "personal":
+        if repo_type == "personal":
             raise HTTPException(status_code=400, detail="user_id must be a number.")
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
@@ -188,12 +190,15 @@ async def analyze_document(
                 max_chunk_size=200,
                 overlap=20,
             )
-            file_path_stored = f"uploaded/{meta.file_name}"
+            original_filename = (filename_override and filename_override.strip()) or file.filename or meta.file_name
+            file_path_stored = f"uploaded/{original_filename}"
             meta_dict = meta.to_dict()
             if will_save:
+                embeddings_arr = encode_chunks(chunks)
+                embeddings_blobs = [arr.tobytes() for arr in embeddings_arr]
                 save_document(
                     document_id=meta.document_id,
-                    file_name=meta.file_name,
+                    file_name=original_filename,
                     file_path=file_path_stored,
                     num_chunks=meta.num_chunks,
                     indexing_time=meta.indexing_time,
@@ -203,11 +208,17 @@ async def analyze_document(
                     chunks=chunks,
                     repo_type=repo_type,
                     owner_id=owner_id_val,
+                    embeddings=embeddings_blobs,
                 )
                 meta_dict["indexed_at"] = datetime.now(timezone.utc).isoformat()
             meta_dict["file_path"] = file_path_stored
             meta_dict["repo_type"] = repo_type
             meta_dict["owner_id"] = owner_id_val
+
+            semantic_similarity, lexical_similarity, matches = 0.0, 0.0, []
+            if not will_save and chunks:
+                repo_chunks = get_chunks_with_embeddings(repo_type=repo_type, owner_id=owner_id_val)
+                semantic_similarity, lexical_similarity, matches = find_matches(chunks, repo_chunks, threshold=0.5)
         finally:
             try:
                 os.unlink(tmp_path)
@@ -215,12 +226,14 @@ async def analyze_document(
                 pass
         return {
             "source_text": cleaned_text,
-            "overall_similarity": 0,
-            "matches": [],
-            "filename": meta.file_name,
+            "overall_similarity": semantic_similarity,
+            "semantic_similarity": semantic_similarity,
+            "lexical_similarity": lexical_similarity,
+            "matches": matches,
+            "filename": original_filename,
             "page_or_slide_count": meta.num_pages_or_slides,
             "chunk_count": meta.num_chunks,
-            "metadata": meta_dict,
+            "metadata": {**meta_dict, "file_name": original_filename},
         }
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

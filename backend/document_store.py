@@ -1,10 +1,10 @@
 """
-SQLite store for document metadata and chunks (repository documents).
+SQLite store for document metadata, chunks, and embeddings (repository documents).
 """
 import os
 import sqlite3
 from datetime import datetime, timezone
-from typing import List
+from typing import List, Optional
 
 # Always save in week2/ folder (same as auth.db), regardless of where server is run from
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -59,6 +59,15 @@ def init_db(db_path: str = DB_PATH) -> None:
             FOREIGN KEY (document_id) REFERENCES documents(document_id)
         )
     """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS document_chunk_embeddings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            document_id TEXT NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            embedding BLOB NOT NULL,
+            FOREIGN KEY (document_id) REFERENCES documents(document_id)
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -75,9 +84,10 @@ def save_document(
     chunks: List[str],
     repo_type: str = "university",
     owner_id: int = None,
+    embeddings: Optional[List[bytes]] = None,
     db_path: str = DB_PATH,
 ) -> None:
-    """Save document metadata and all chunks to SQLite. repo_type: 'university' | 'personal'; owner_id: teacher user id for personal."""
+    """Save document metadata, chunks, and optional embeddings. embeddings: list of bytes (numpy float32 .tobytes())."""
     init_db(db_path)
     indexed_at = datetime.now(timezone.utc).isoformat()
     conn = get_connection(db_path)
@@ -108,6 +118,13 @@ def save_document(
                 "INSERT INTO document_chunks (document_id, chunk_index, chunk_text) VALUES (?, ?, ?)",
                 (document_id, i, text),
             )
+        if embeddings:
+            for i, emb_blob in enumerate(embeddings):
+                if i < len(chunks):
+                    cursor.execute(
+                        "INSERT INTO document_chunk_embeddings (document_id, chunk_index, embedding) VALUES (?, ?, ?)",
+                        (document_id, i, emb_blob),
+                    )
         conn.commit()
     finally:
         conn.close()
@@ -130,8 +147,40 @@ def get_stats(db_path: str = DB_PATH):
         conn.close()
 
 
+def get_chunks_with_embeddings(repo_type: str = "university", owner_id: int = None, db_path: str = DB_PATH):
+    """Get chunks with embeddings for semantic similarity scan."""
+    init_db(db_path)
+    conn = get_connection(db_path)
+    cursor = conn.cursor()
+    try:
+        if repo_type == "personal" and owner_id is not None:
+            cursor.execute(
+                """SELECT dc.document_id, d.file_name, dc.chunk_index, dc.chunk_text, ce.embedding
+                   FROM document_chunks dc
+                   JOIN documents d ON dc.document_id = d.document_id
+                   LEFT JOIN document_chunk_embeddings ce ON dc.document_id = ce.document_id AND dc.chunk_index = ce.chunk_index
+                   WHERE d.repo_type = ? AND d.owner_id = ?""",
+                (repo_type, owner_id)
+            )
+        else:
+            cursor.execute(
+                """SELECT dc.document_id, d.file_name, dc.chunk_index, dc.chunk_text, ce.embedding
+                   FROM document_chunks dc
+                   JOIN documents d ON dc.document_id = d.document_id
+                   LEFT JOIN document_chunk_embeddings ce ON dc.document_id = ce.document_id AND dc.chunk_index = ce.chunk_index
+                   WHERE d.repo_type = 'university'"""
+            )
+        rows = cursor.fetchall()
+        return [
+            {"document_id": r[0], "file_name": r[1], "chunk_index": r[2], "chunk_text": r[3] or "", "embedding": r[4]}
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
+
 def get_chunks_for_scan(repo_type: str = "university", owner_id: int = None, db_path: str = DB_PATH):
-    """Get chunks for similarity scan."""
+    """Get chunks for similarity scan (no embeddings, legacy)."""
     init_db(db_path)
     conn = get_connection(db_path)
     cursor = conn.cursor()
@@ -189,6 +238,7 @@ def delete_document(document_id: str, db_path: str = DB_PATH) -> bool:
     conn = get_connection(db_path)
     cursor = conn.cursor()
     try:
+        cursor.execute("DELETE FROM document_chunk_embeddings WHERE document_id = ?", (document_id,))
         cursor.execute("DELETE FROM document_chunks WHERE document_id = ?", (document_id,))
         cursor.execute("DELETE FROM documents WHERE document_id = ?", (document_id,))
         conn.commit()

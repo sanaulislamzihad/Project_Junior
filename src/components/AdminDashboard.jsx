@@ -94,6 +94,7 @@ const AdminDashboard = () => {
         try {
             const formData = new FormData();
             formData.append('file', uploadFile);
+            formData.append('filename_override', uploadFile.name || '');
             formData.append('repo_type', 'university');
             formData.append('user_id', String(user?.id ?? ''));
             formData.append('role', 'admin');

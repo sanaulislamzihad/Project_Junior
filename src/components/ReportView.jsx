@@ -15,34 +15,28 @@ const COLORS = [
 
 const ReportView = ({ data, onReset }) => {
 
-    // 1. Process matches to create a "coverage map" for the source text.
-    // We want to know for every character, which match (if any) allows it.
-    // We prioritize matches by order (highest similarity first).
+    // Check if matches use new format (semantic/lexical) or old format (matched_segments)
+    const hasNewFormat = data.matches?.length > 0 && (
+        typeof data.matches[0].semantic_similarity === 'number' ||
+        typeof data.matches[0].similarity === 'number'
+    );
+
     const textCoverage = useMemo(() => {
-        if (!data.source_text) return [];
-
-        // Array representing every char in source text. null = no match.
-        // We'll store: { matchIndex, color, matchData }
+        if (!data.source_text || !data.matches?.length || hasNewFormat) return [];
+        const sortedMatches = [...data.matches].sort((a, b) => (b.similarity_score ?? 0) - (a.similarity_score ?? 0));
         const coverage = new Array(data.source_text.length).fill(null);
-
-        // Sort matches by score desc (already done by backend usually, but ensure)
-        const sortedMatches = [...data.matches].sort((a, b) => b.similarity_score - a.similarity_score);
-
         sortedMatches.forEach((match, matchIdx) => {
-            const color = COLORS[matchIdx % COLORS.length]; // cycle colors
-            match.matched_segments.forEach(segment => {
-                // Fill the coverage array for this segment range.
-                // Only fill if it's not already filled (Higher score matches take precedence)
+            const segments = match.matched_segments || [];
+            segments.forEach(segment => {
                 for (let i = segment.start; i < segment.end; i++) {
                     if (i < coverage.length && coverage[i] === null) {
-                        coverage[i] = { matchIdx, color, filename: match.filename };
+                        coverage[i] = { matchIdx, color: COLORS[matchIdx % COLORS.length], filename: match.filename || match.file_name };
                     }
                 }
             });
         });
-
         return coverage;
-    }, [data]);
+    }, [data, hasNewFormat]);
 
     // 2. Build the renderable text chunks
     const renderContent = () => {
@@ -78,7 +72,7 @@ const ReportView = ({ data, onReset }) => {
                                         cursor: 'pointer'
                                     }
                             }
-                            title={currentMatchIdx !== -1 ? `Match: ${data.matches[currentMatchIdx] && data.matches[currentMatchIdx].filename}` : ''}
+                            title={currentMatchIdx !== -1 ? `Match: ${data.matches[currentMatchIdx]?.file_name || data.matches[currentMatchIdx]?.filename || ''}` : ''}
                         >
                             {textSegment}
                         </span>
@@ -166,11 +160,20 @@ const ReportView = ({ data, onReset }) => {
             {/* Right: Match Overview Sidebar */}
             <div className="w-[350px] bg-white border-l border-slate-200 flex flex-col shadow-lg z-10">
                 <div className="p-6 border-b border-slate-200 bg-slate-50">
-                    <div className="flex justify-between items-center mb-1">
-                        <h2 className="text-xl font-bold text-slate-800">Match Overview</h2>
-                        <div className="text-2xl font-bold text-red-600">{Math.round(data.overall_similarity)}%</div>
+                    <h2 className="text-xl font-bold text-slate-800 mb-3">Match Overview</h2>
+                    <div className="flex gap-4">
+                        <div className="flex-1 p-3 bg-white rounded-lg border border-slate-200">
+                            <div className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Semantic</div>
+                            <div className="text-2xl font-bold text-indigo-600">{Math.round(data.semantic_similarity ?? data.overall_similarity ?? 0)}%</div>
+                            <div className="text-[10px] text-slate-400">AI / paraphrase detection</div>
+                        </div>
+                        <div className="flex-1 p-3 bg-white rounded-lg border border-slate-200">
+                            <div className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Lexical</div>
+                            <div className="text-2xl font-bold text-sky-600">{Math.round(data.lexical_similarity ?? 0)}%</div>
+                            <div className="text-[10px] text-slate-400">Exact / word overlap</div>
+                        </div>
                     </div>
-                    <div className="text-xs text-slate-500 uppercase tracking-wider font-semibold">Top Sources</div>
+                    <div className="text-xs text-slate-500 uppercase tracking-wider font-semibold mt-3">Top Sources</div>
                 </div>
 
                 {/* Document Metadata (TEXT_PROCESSING_PLAN §5) */}
@@ -224,23 +227,28 @@ const ReportView = ({ data, onReset }) => {
                                     </div>
                                     <div className="flex-1 min-w-0">
                                         <div className="text-sm font-semibold text-slate-700 truncate group-hover:text-sky-600 transition-colors">
-                                            {match.filename}
+                                            {match.file_name || match.filename}
                                         </div>
-                                        <div className="text-xs text-slate-400">NSU Repository</div>
+                                        <div className="text-xs text-slate-400 flex gap-2 mt-0.5">
+                                            <span>Sem: {Math.round((match.semantic_similarity ?? match.similarity ?? 0) * 100)}%</span>
+                                            <span>Lex: {Math.round((match.lexical_similarity ?? 0) * 100)}%</span>
+                                        </div>
                                     </div>
-                                    <div className="flex items-center gap-2">
-                                        <span className="font-bold text-slate-600" style={{ color: COLORS[idx % COLORS.length] }}>
-                                            {Math.round(match.similarity_score)}%
-                                        </span>
-                                        <ChevronRight size={16} className={`text-slate-300 transition-transform ${expandedMatchIdx === idx ? 'rotate-90' : ''}`} />
-                                    </div>
+                                    <ChevronRight size={16} className={`text-slate-300 transition-transform ${expandedMatchIdx === idx ? 'rotate-90' : ''}`} />
                                 </div>
                             </div>
 
-                            {/* Expanded Snippets */}
                             {expandedMatchIdx === idx && (
                                 <div className="mt-2 ml-4 pl-4 border-l-2 border-slate-100 space-y-2 animate-fade-in">
-                                    {match.matched_segments.map((segment, sIdx) => (
+                                    <div className="text-xs text-slate-600 bg-slate-50 p-2 rounded border border-slate-100">
+                                        <div className="font-semibold text-slate-700 mb-1">Your text:</div>
+                                        "{match.query_text_preview}"
+                                    </div>
+                                    <div className="text-xs text-slate-600 bg-slate-50 p-2 rounded border border-slate-100">
+                                        <div className="font-semibold text-slate-700 mb-1">Matched in repo:</div>
+                                        "{match.matched_text_preview}"
+                                    </div>
+                                    {match.matched_segments?.map((segment, sIdx) => (
                                         <div key={sIdx} className="text-xs text-slate-600 bg-slate-50 p-2 rounded border border-slate-100">
                                             "{segment.text}"
                                         </div>

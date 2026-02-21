@@ -37,6 +37,7 @@ function MainApp() {
     setAddRepoAnalyzing(true);
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('filename_override', file.name || '');
     const repoType = user?.role === 'admin' ? 'university' : 'personal';
     formData.append('repo_type', repoType);
     formData.append('role', user?.role || 'teacher');
@@ -63,6 +64,7 @@ function MainApp() {
     setCheckAnalyzing(true);
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('filename_override', file.name || '');
     formData.append('repo_type', compareAgainst === 'university' ? 'university' : 'personal');
     formData.append('role', user?.role || 'teacher');
     formData.append('add_to_repo', 'false');
@@ -220,8 +222,8 @@ function MainApp() {
                 </div>
                 {/* Right: Check document + Add to repo */}
                 <div className="flex-1 min-w-0 space-y-8">
-                  {/* 1. Check document - OFF for now, will work when compare function is added */}
-                  <div className="flex flex-col items-center justify-center w-full opacity-60 pointer-events-none">
+                  {/* 1. Check document - compare against repo */}
+                  <div className="flex flex-col items-center justify-center w-full">
                     {/* Hero Text */}
                     <motion.div
                       initial={{ opacity: 0, y: 20 }}
@@ -325,10 +327,10 @@ function MainApp() {
                                     <Upload className="w-8 h-8" />
                                   </div>
                                   <h3 className="text-xl font-semibold text-slate-700 mb-2">
-                                    Check this Document <span className="text-xs font-normal text-amber-600">(Coming soon)</span>
+                                    Check this Document
                                   </h3>
                                   <p className="text-slate-400 text-sm">
-                                    Compare function will be added later
+                                    Drag & drop or <span className="text-sky-600 font-medium hover:underline underline-offset-4">browse files</span> to compare against repository
                                   </p>
                                   <div className="mt-6 flex gap-4 text-xs text-slate-400 font-mono">
                                     <span className="px-2 py-1 rounded bg-slate-50 border border-slate-200">PDF & PPTX</span>
