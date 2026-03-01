@@ -187,8 +187,8 @@ async def analyze_document(
                 tmp_path,
                 pdf_method="pdfplumber",
                 chunk_strategy="words",
-                max_chunk_size=200,
-                overlap=20,
+                max_chunk_size=250,
+                overlap=60,
             )
             original_filename = (filename_override and filename_override.strip()) or file.filename or meta.file_name
             file_path_stored = f"uploaded/{original_filename}"
@@ -218,7 +218,9 @@ async def analyze_document(
             semantic_similarity, lexical_similarity, matches = 0.0, 0.0, []
             if not will_save and chunks:
                 repo_chunks = get_chunks_with_embeddings(repo_type=repo_type, owner_id=owner_id_val)
-                semantic_similarity, lexical_similarity, matches = find_matches(chunks, repo_chunks, threshold=0.5)
+                semantic_similarity, lexical_similarity, matches = find_matches(
+                    chunks, repo_chunks, repo_type=repo_type, owner_id=owner_id_val
+                )
         finally:
             try:
                 os.unlink(tmp_path)

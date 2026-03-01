@@ -22,3 +22,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# Backend: downloaded embedding model cache (do not re-download on restart)
+backend/model_cache
+backend/faiss_index_cache

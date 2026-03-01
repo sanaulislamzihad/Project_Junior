@@ -159,6 +159,224 @@ def extract_text_from_file(
 
 
 # =============================================================================
+# FILE PROCESSING LAYER (A): Header/Footer, Duplicate, Lowercase, Stopwords
+# =============================================================================
+
+def remove_duplicate_lines(text: str) -> str:
+    """Remove consecutive duplicate lines (keeps one copy)."""
+    if not text or not isinstance(text, str):
+        return ""
+    lines = text.split("\n")
+    out = []
+    prev = None
+    for line in lines:
+        s = line.strip()
+        if s != prev:
+            out.append(line)
+            prev = s
+    return "\n".join(out)
+
+
+def remove_header_footer_lines(text: str) -> str:
+    """Remove lines that look like page numbers or very short header/footer (e.g. only digits, or 1-2 words)."""
+    if not text or not isinstance(text, str):
+        return ""
+    lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+    filtered = []
+    for ln in lines:
+        if re.match(r"^\d+$", ln):
+            continue
+        if len(ln) <= 2:
+            continue
+        words = ln.split()
+        if len(words) <= 1 and len(ln) < 20:
+            continue
+        filtered.append(ln)
+    return "\n".join(filtered)
+
+
+def normalize_lowercase(text: str) -> str:
+    """Lowercase for consistent comparison (embedding model may be case-insensitive; helps lexical)."""
+    return text.lower() if text else ""
+
+
+# Common boilerplate phrases in weekly reports/templates that should not drive similarity.
+_BOILERPLATE_PHRASES = [
+    "weekly report",
+    "weeklyreport",
+    "tasks completed",
+    "tasks com",
+    "challenges faced",
+    "progress made",
+    "work narrative of the current week",
+    "follow-up from last week",
+    "follow up from last week",
+]
+
+
+def remove_boilerplate_phrases(text: str) -> str:
+    """Remove known boilerplate phrases (case-insensitive) to reduce false matches."""
+    if not text or not isinstance(text, str):
+        return text or ""
+    t = text
+    for phrase in _BOILERPLATE_PHRASES:
+        t = re.sub(re.escape(phrase), " ", t, flags=re.IGNORECASE)
+    # Collapse multiple spaces/newlines introduced by removals.
+    t = re.sub(r"\s+", " ", t)
+    return t.strip()
+
+
+# Patterns and phrases for institutional metadata (student info, course codes, etc.).
+_METADATA_IGNORE_PATTERNS = [
+    # Student identifiers
+    r"\b(?:student|id|identification|roll)\s*(?:no|number|#)?\s*:?\s*\d+",
+    r"\b(?:student|candidate)\s+(?:name|id)\s*:",
+    # Dates
+    r"\b(?:submission|submitted|date)\s*:?\s*\d{1,2}[/-]\d{1,2}[/-]\d{2,4}",
+    r"\b\d{1,2}[/-]\d{1,2}[/-]\d{2,4}\b",
+    r"\b(?:january|february|march|april|may|june|july|august|september|october|november|december)\s+\d{1,2},?\s+\d{4}",
+    # Contact information
+    r"\bemail\s*:?\s*\S+@\S+\.\S+",
+    r"\b(?:phone|mobile)\s*:?\s*[\d\s\-\(\)\+]+",
+    # Course codes / academic session
+    r"\bcourse\s+(?:code|number|id)\s*:?\s*[A-Z]{2,4}\s*\d{3,4}",
+    r"\bsemester\s*:?\s*\w+",
+    r"\bsession\s*:?\s*\d{4}\s*-\s*\d{4}",
+    # Registration / enrollment
+    r"\b(?:registration|enrollment)\s+(?:number|no|#)\s*:?\s*\d+",
+]
+
+_METADATA_IGNORE_PHRASES = {
+    "submitted by",
+    "submitted to",
+    "prepared by",
+    "prepared for",
+    "course code",
+    "course name",
+    "course title",
+    "instructor",
+    "professor",
+    "supervisor",
+    "advisor",
+    "department of",
+    "faculty of",
+    "university",
+    "college",
+    "institute",
+    "academic year",
+    "registration number",
+    "enrollment number",
+    "student id",
+    "in partial fulfillment",
+    "partial fulfillment of",
+    "requirement for the degree",
+}
+
+
+def remove_institutional_metadata(text: str) -> str:
+    """Remove lines that look like institutional metadata to avoid inflating similarity."""
+    if not text or not isinstance(text, str):
+        return text or ""
+    lines = text.split("\n")
+    kept = []
+    for ln in lines:
+        stripped = ln.strip()
+        if not stripped:
+            continue
+        lower = stripped.lower()
+        # Phrase-based ignore
+        if any(phrase in lower for phrase in _METADATA_IGNORE_PHRASES):
+            continue
+        # Regex-based ignore
+        ignore = False
+        for pattern in _METADATA_IGNORE_PATTERNS:
+            if re.search(pattern, stripped, flags=re.IGNORECASE):
+                ignore = True
+                break
+        if ignore:
+            continue
+        kept.append(stripped)
+    return "\n".join(kept)
+
+
+def remove_references_section(text: str) -> str:
+    """Trim off the references/bibliography section so common citation lists don't dominate matches."""
+    if not text or not isinstance(text, str):
+        return text or ""
+    ref_headers = [
+        r"\bReferences\b",
+        r"\bBibliography\b",
+        r"\bWorks Cited\b",
+        r"\bLiterature Cited\b",
+        r"\bCitations\b",
+    ]
+    earliest_pos = len(text)
+    for header in ref_headers:
+        m = re.search(header, text, flags=re.IGNORECASE)
+        if m:
+            earliest_pos = min(earliest_pos, m.start())
+    if earliest_pos < len(text):
+        return text[:earliest_pos]
+    return text
+
+
+# Optional stopwords (common English); set to None to disable.
+_STOPWORDS = None
+
+def _get_stopwords() -> set:
+    global _STOPWORDS
+    if _STOPWORDS is None:
+        try:
+            import nltk
+            try:
+                nltk.data.find("corpora/stopwords")
+            except LookupError:
+                nltk.download("stopwords", quiet=True)
+            from nltk.corpus import stopwords
+            _STOPWORDS = set(stopwords.words("english"))
+        except Exception:
+            _STOPWORDS = set()
+    return _STOPWORDS
+
+
+def remove_stopwords(text: str, stopwords_optional: bool = True) -> str:
+    """Remove stopwords (optional). When enabled, reduces noise for similarity."""
+    if not stopwords_optional or not text:
+        return text or ""
+    sw = _get_stopwords()
+    if not sw:
+        return text
+    words = text.split()
+    kept = [w for w in words if w.lower() not in sw]
+    return " ".join(kept)
+
+
+def apply_file_processing_layer(
+    full_text: str,
+    lowercase: bool = True,
+    remove_stopwords_opt: bool = False,
+) -> str:
+    """
+    (A) File Processing Layer: duplicate line remover, header/footer remover,
+    clean, lowercase normalize, optional stopword remove.
+    """
+    if not full_text or not full_text.strip():
+        return ""
+    t = remove_duplicate_lines(full_text)
+    t = remove_header_footer_lines(t)
+    t = remove_references_section(t)
+    t = remove_institutional_metadata(t)
+    # Remove boilerplate phrases common in weekly reports / templates so they do not dominate similarity.
+    t = remove_boilerplate_phrases(t)
+    t = clean_text(t)
+    if lowercase:
+        t = normalize_lowercase(t)
+    if remove_stopwords_opt:
+        t = remove_stopwords(t, stopwords_optional=True)
+    return t.strip()
+
+
+# =============================================================================
 # TEXT CLEANING
 # =============================================================================
 
@@ -208,6 +426,37 @@ def chunk_by_words(
         else:
             start = end - overlap_words
     return chunks
+
+
+def chunk_by_sentences(text: str, min_length: int = 3) -> List[str]:
+    """Split by sentence boundaries (. ? !). Each chunk = one sentence."""
+    text = clean_text(text)
+    if not text:
+        return []
+    parts = re.split(r"(?<=[.!?])\s*(?=[A-Z]|$)", text)
+    sentences = [s.strip() for s in parts if s and len(s.strip()) >= min_length]
+    if len(sentences) <= 1 and "\n" in text:
+        parts = [p.strip() for p in text.split("\n") if p.strip() and len(p.strip()) >= min_length]
+        if parts:
+            return parts
+    return sentences if sentences else [text.strip()] if text.strip() else []
+
+
+def chunk_by_paragraphs(full_text: str, fallback_max_words: int = 80) -> List[str]:
+    """
+    Split by paragraph (double newline). Each chunk = one paragraph so comparison is meaningful.
+    If no paragraph breaks, fall back to small word chunks (80 words).
+    """
+    if not full_text or not full_text.strip():
+        return []
+    # Split on double newline (one or more newlines with optional spaces) before we collapse whitespace.
+    raw_paragraphs = re.split(r"\n\s*\n", full_text)
+    cleaned = [clean_text(p).strip() for p in raw_paragraphs if p and clean_text(p).strip()]
+    if len(cleaned) >= 2:
+        return cleaned
+    # No paragraph breaks: use smaller word chunks so "Your text" / "Matched" are comparable.
+    single = clean_text(full_text)
+    return chunk_by_words(single, max_words=fallback_max_words, overlap_words=0, min_chunk_words=10)
 
 
 def chunk_by_tokens_approx(
@@ -264,9 +513,15 @@ def process_document(
 
     full_text, file_type, num_pages = extract_text_from_file(file_path, pdf_method=pdf_method)
     raw_length = len(full_text)
-    cleaned = clean_text(full_text)
+    # (A) File processing layer: duplicate lines, header/footer, clean, lowercase, optional stopwords
+    cleaned = apply_file_processing_layer(full_text, lowercase=True, remove_stopwords_opt=False)
 
-    if chunk_strategy == "tokens_approx":
+    # (B) Chunking: 200-300 word chunks, 20-30% overlap (do not embed whole document)
+    if chunk_strategy == "paragraphs":
+        chunks = chunk_by_paragraphs(full_text)
+    elif chunk_strategy == "sentences":
+        chunks = chunk_by_sentences(cleaned)
+    elif chunk_strategy == "tokens_approx":
         chunks = chunk_by_tokens_approx(
             cleaned,
             max_tokens_approx=max_chunk_size,

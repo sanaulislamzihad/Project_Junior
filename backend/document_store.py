@@ -126,6 +126,12 @@ def save_document(
                         (document_id, i, emb_blob),
                     )
         conn.commit()
+        # Invalidate FAISS cache for this repo so next similarity search rebuilds index from DB.
+        try:
+            from faiss_index import invalidate_cached_index
+            invalidate_cached_index(repo_type, owner_id)
+        except Exception:
+            pass
     finally:
         conn.close()
 
@@ -242,6 +248,12 @@ def delete_document(document_id: str, db_path: str = DB_PATH) -> bool:
         cursor.execute("DELETE FROM document_chunks WHERE document_id = ?", (document_id,))
         cursor.execute("DELETE FROM documents WHERE document_id = ?", (document_id,))
         conn.commit()
+        # Invalidate all FAISS caches so next search rebuilds (we do not know repo_type/owner_id here).
+        try:
+            from faiss_index import invalidate_all_cached_indexes
+            invalidate_all_cached_indexes()
+        except Exception:
+            pass
         return cursor.rowcount > 0  # rowcount from last DELETE (documents)
     finally:
         conn.close()
