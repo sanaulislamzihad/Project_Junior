@@ -60,7 +60,7 @@ const ComparisonView = ({ data, onReset }) => {
             <div className="bg-white border-b border-slate-200 p-4 shadow-sm z-10 flex items-center justify-between">
                 <button
                     onClick={onReset}
-                    className="flex items-center gap-2 text-slate-500 hover:text-sky-600 font-medium transition-colors"
+                    className="flex items-center gap-2 text-slate-500 hover:text-brand-600 font-bold transition-colors"
                 >
                     <ArrowLeft size={18} />
                     Back to Upload

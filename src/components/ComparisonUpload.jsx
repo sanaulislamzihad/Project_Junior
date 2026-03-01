@@ -26,26 +26,26 @@ const SingleUploadBox = ({ label, file, setFile, disabled }) => {
                 <div
                     {...getRootProps()}
                     className={`
-                        h-64 border-2 border-dashed rounded-2xl flex flex-col items-center justify-center cursor-pointer transition-all
-                        ${isDragActive ? 'border-sky-500 bg-sky-50' : 'border-slate-200 hover:border-sky-400 hover:bg-white bg-slate-50/50'}
+                        h-64 border-2 border-dashed rounded-3xl flex flex-col items-center justify-center cursor-pointer transition-all shadow-sm
+                        ${isDragActive ? 'border-brand-500 bg-brand-50/50' : 'border-slate-200 hover:border-brand-400 hover:bg-white bg-slate-50/50'}
                     `}
                 >
                     <input {...getInputProps()} />
-                    <div className="mb-3 p-3 bg-white rounded-full shadow-sm text-sky-600">
-                        <Upload size={24} />
+                    <div className="mb-3 p-4 bg-white rounded-2xl shadow-sm text-brand-600 border border-brand-100/50 group-hover:scale-110 transition-transform">
+                        <Upload size={28} />
                     </div>
                     <p className="text-sm font-medium text-slate-600">Upload File</p>
                     <p className="text-xs text-slate-400 mt-1">PDF or PPTX</p>
                 </div>
             ) : (
-                <div className="h-64 border-2 border-slate-200 rounded-2xl bg-white flex flex-col items-center justify-center relative overflow-hidden">
+                <div className="h-64 border-2 border-slate-200 rounded-3xl bg-white flex flex-col items-center justify-center relative overflow-hidden shadow-sm">
                     <button
                         onClick={(e) => { e.stopPropagation(); setFile(null); }}
-                        className="absolute top-3 right-3 p-1.5 rounded-full hover:bg-red-50 text-slate-400 hover:text-red-500 transition-colors"
+                        className="absolute top-3 right-3 p-2 rounded-full hover:bg-red-50 text-slate-400 hover:text-red-500 transition-colors"
                     >
                         <X size={18} />
                     </button>
-                    <div className="w-16 h-16 bg-sky-100 text-sky-600 rounded-xl flex items-center justify-center mb-4">
+                    <div className="w-16 h-16 bg-brand-50 text-brand-600 border border-brand-100 rounded-2xl flex items-center justify-center mb-4 shadow-sm">
                         <FileText size={32} />
                     </div>
                     <p className="font-medium text-slate-800 text-center px-4 truncate max-w-full">
@@ -119,7 +119,7 @@ const ComparisonUpload = ({ onCompare, isAnalyzing }) => {
                         className={`
                             px-8 py-4 rounded-xl font-bold text-lg shadow-lg flex items-center gap-3 transition-all
                             ${sourceFile && targetFile && !isAnalyzing
-                                ? 'bg-gradient-to-r from-sky-600 to-indigo-600 text-white hover:scale-105 shadow-sky-200'
+                                ? 'bg-gradient-to-r from-brand-600 to-teal-500 text-white hover:scale-105 shadow-brand-500/30'
                                 : 'bg-slate-100 text-slate-400 cursor-not-allowed'
                             }
                         `}

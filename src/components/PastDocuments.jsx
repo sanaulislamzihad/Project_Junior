@@ -67,17 +67,17 @@ const PastDocuments = ({ user, refreshKey = 0 }) => {
     };
 
     return (
-        <div className="w-full max-w-2xl mt-6">
+        <div className="w-full mt-6">
             <div className="w-full flex items-center gap-2 px-4 py-3 rounded-xl border border-slate-200 bg-white">
                 <button
                     type="button"
                     onClick={() => setExpanded(!expanded)}
                     className="flex-1 flex items-center justify-between text-left transition-colors hover:bg-slate-50 rounded-lg -m-2 p-2"
                 >
-                    <span className="font-medium text-slate-700 flex items-center gap-2">
-                        <FileText className="w-4 h-4 text-sky-500" />
+                    <span className="font-bold text-slate-700 flex items-center gap-2">
+                        <FileText className="w-5 h-5 text-brand-500" />
                         Past repository ({documents.length})
-                        <span className="text-xs font-normal text-slate-500 ml-1">
+                        <span className="text-sm font-medium text-slate-500 ml-1">
                             {user?.role === 'teacher' ? '(your uploads)' : '(whole university)'}
                         </span>
                     </span>
@@ -87,7 +87,7 @@ const PastDocuments = ({ user, refreshKey = 0 }) => {
                     type="button"
                     onClick={fetchDocuments}
                     disabled={loading}
-                    className="p-2 rounded-lg hover:bg-slate-100 text-slate-500 hover:text-sky-600 disabled:opacity-50"
+                    className="p-2 rounded-lg hover:bg-slate-100 text-slate-500 hover:text-brand-600 disabled:opacity-50 transition-colors"
                     title="Refresh list"
                 >
                     <RefreshCw className={`w-5 h-5 ${loading ? 'animate-spin' : ''}`} />
@@ -108,12 +108,12 @@ const PastDocuments = ({ user, refreshKey = 0 }) => {
                                 <div className="p-6 text-center text-slate-500">Loading...</div>
                             ) : fetchError ? (
                                 <div className="p-6 text-center">
-                                    <p className="text-red-600 mb-2">{fetchError}</p>
+                                    <p className="text-red-600 mb-2 font-medium">{fetchError}</p>
                                     <p className="text-sm text-slate-500">Run: cd Project_Junior-week2/week2/backend && python main.py</p>
-                                    <button type="button" onClick={fetchDocuments} className="mt-2 text-sky-600 hover:underline">Retry</button>
+                                    <button type="button" onClick={fetchDocuments} className="mt-3 text-brand-600 font-bold hover:underline">Retry</button>
                                 </div>
                             ) : documents.length === 0 ? (
-                                <div className="p-6 text-center text-slate-500">No documents in this repository yet. Upload above to add.</div>
+                                <div className="p-6 text-center text-slate-500 font-medium">No documents in this repository yet. Upload above to add.</div>
                             ) : (
                                 documents.map((doc) => (
                                     <div
@@ -131,10 +131,10 @@ const PastDocuments = ({ user, refreshKey = 0 }) => {
                                             <button
                                                 type="button"
                                                 onClick={() => setViewing(viewing?.document_id === doc.document_id ? null : doc)}
-                                                className="p-2 rounded-lg hover:bg-sky-50 text-slate-500 hover:text-sky-600"
+                                                className="p-2 rounded-lg hover:bg-brand-50 text-slate-500 hover:text-brand-600 transition-colors"
                                                 title="View details"
                                             >
-                                                <Eye className="w-4 h-4" />
+                                                <Eye className="w-5 h-5" />
                                             </button>
                                             <button
                                                 type="button"
