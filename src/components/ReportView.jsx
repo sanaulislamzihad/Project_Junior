@@ -5,6 +5,7 @@ import {
     ShieldAlert, ShieldCheck, AlertTriangle, ArrowLeft
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import PdfViewer from './PdfViewer';
 
 const COLORS = [
     { bg: '#ef4444', light: '#fef2f2', border: '#fecaca', text: '#dc2626' },
@@ -55,7 +56,7 @@ function MiniBar({ value, color }) {
     );
 }
 
-const ReportView = ({ data, onReset }) => {
+const ReportView = ({ data, pdfFile, onReset }) => {
     const [expandedMatchIdx, setExpandedMatchIdx] = useState(null);
     const [activePanel, setActivePanel] = useState('matches');
 
@@ -153,18 +154,19 @@ const ReportView = ({ data, onReset }) => {
             </div>
 
             {/* ── Main Content: Document + Sidebar ── */}
-            <div className="flex w-full" style={{ minHeight: 'calc(100vh - 80px - 56px)' }}>
+            <div className="flex w-full" style={{ height: 'calc(100vh - 80px - 56px)' }}>
 
-                {/* Left: Scrollable Document */}
-                <div className="flex-1 overflow-y-auto bg-slate-100 p-6 lg:p-8">
+                {/* Left: PDF Viewer or Extracted Text */}
+                <div className="flex-1 overflow-hidden bg-slate-100 flex flex-col" style={{ minHeight: 0 }}>
                     <motion.div
                         initial={{ opacity: 0, y: 14 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ delay: 0.1, duration: 0.4 }}
-                        className="w-full min-h-full bg-white rounded-2xl shadow-lg border border-slate-200 overflow-hidden flex flex-col"
+                        className="flex-1 flex flex-col m-4 lg:m-6 bg-white rounded-2xl shadow-lg border border-slate-200 overflow-hidden"
+                        style={{ minHeight: 0 }}
                     >
                         {/* macOS-style title bar */}
-                        <div className="flex items-center gap-2 px-5 py-3 bg-slate-50 border-b border-slate-200">
+                        <div className="flex items-center gap-2 px-5 py-3 bg-slate-50 border-b border-slate-200 shrink-0">
                             <div className="w-3 h-3 rounded-full bg-red-400" />
                             <div className="w-3 h-3 rounded-full bg-amber-400" />
                             <div className="w-3 h-3 rounded-full bg-emerald-400" />
@@ -175,15 +177,22 @@ const ReportView = ({ data, onReset }) => {
                                 {data.chunk_count != null && ` • ${data.chunk_count} chunks`}
                             </span>
                         </div>
-                        {/* Text content */}
-                        <div
-                            className="px-10 sm:px-14 py-10 sm:py-12 text-base sm:text-[17px] leading-[1.95] text-slate-800 whitespace-pre-wrap"
-                            style={{ fontFamily: '"Georgia", "Times New Roman", serif', textAlign: 'justify' }}
-                        >
-                            {data.source_text ? renderContent() : (
-                                <p className="text-slate-400 italic text-center py-20">No text could be extracted from this document.</p>
-                            )}
-                        </div>
+
+                        {/* PDF Viewer or extracted text fallback */}
+                        {pdfFile && (data.filename || '').toLowerCase().endsWith('.pdf') ? (
+                            <div className="flex-1 overflow-hidden" style={{ minHeight: 0 }}>
+                                <PdfViewer file={pdfFile} />
+                            </div>
+                        ) : (
+                            <div
+                                className="flex-1 overflow-y-auto px-10 sm:px-14 py-10 sm:py-12 text-base sm:text-[17px] leading-[1.95] text-slate-800 whitespace-pre-wrap"
+                                style={{ fontFamily: '"Georgia", "Times New Roman", serif', textAlign: 'justify' }}
+                            >
+                                {data.source_text ? renderContent() : (
+                                    <p className="text-slate-400 italic text-center py-20">No text could be extracted from this document.</p>
+                                )}
+                            </div>
+                        )}
                     </motion.div>
                 </div>
 
