@@ -23,6 +23,7 @@ function MainApp() {
   // Students default to 'diff' mode, others default to 'repo'
   const [appMode, setAppMode] = useState(user?.role === 'student' ? 'diff' : 'repo');
   const [analysisResult, setAnalysisResult] = useState(null);
+  const [uploadedFile, setUploadedFile] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [addRepoAnalyzing, setAddRepoAnalyzing] = useState(false);
   const [pastDocsRefresh, setPastDocsRefresh] = useState(0);
@@ -47,6 +48,7 @@ function MainApp() {
       const response = await axios.post('http://localhost:8000/analyze', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
+      setUploadedFile(file);
       setAnalysisResult(response.data);
       setPastDocsRefresh((n) => n + 1);
     } catch (error) {
@@ -73,6 +75,7 @@ function MainApp() {
       const response = await axios.post('http://localhost:8000/analyze', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
+      setUploadedFile(file);
       setAnalysisResult(response.data);
     } catch (error) {
       console.error("Error checking document:", error);
@@ -104,6 +107,7 @@ function MainApp() {
 
   const resetApp = () => {
     setAnalysisResult(null);
+    setUploadedFile(null);
     setDiffData(null);
     setIsAnalyzing(false);
     setAddRepoAnalyzing(false);
@@ -302,7 +306,7 @@ function MainApp() {
                   </div>
                 </div>
               ) : (
-                <ReportView data={analysisResult} onReset={resetApp} />
+                <ReportView data={analysisResult} pdfFile={uploadedFile} onReset={resetApp} />
               )}
             </>
           )}
