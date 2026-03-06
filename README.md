@@ -1,27 +1,83 @@
-# NSU PlagiChecker - Weekly Report 1 Showcase
+# NSU PlagiChecker
 
-This is a standalone version of the frontend interface developed for Weekly Report 1.
-It demonstrates the UI design, state management between "Repository Check" and "Diff Checker", and the responsive layout.
+Full-stack plagiarism and semantic similarity checker with:
+- FastAPI backend
+- React + Vite frontend
+- FAISS Top-K retrieval
+- N-gram fingerprint verification
+- Diff comparison endpoint
 
 ## Prerequisites
-- Node.js (v18 or higher)
-- npm (usually comes with Node.js)
 
-## Setup & Run
-1. Open a terminal in this directory:
-   ```bash
-   cd weekly_report_1_showcase
-   ```
-2. Install dependencies:
-   ```bash
-   npm install
-   ```
-3. Start the development server:
-   ```bash
-   npm run dev
-   ```
-4. Open the link shown in the terminal (usually `http://localhost:5173`).
+- Python 3.10+ (recommended)
+- Node.js 18+ and npm
+- Windows PowerShell / terminal
+
+## Project Setup
+
+Run from project root:
+
+```bash
+cd Project_Junior-master
+```
+
+### 1) Backend install
+
+Create and activate a virtual environment (recommended):
+
+```bash
+python -m venv .venv
+.\.venv\Scripts\activate
+```
+
+Install backend dependencies:
+
+```bash
+pip install -r backend/requirements.txt
+```
+
+### 2) Frontend install
+
+In a second terminal (project root), install frontend dependencies:
+
+```bash
+npm install
+```
+
+## Run the app
+
+### Terminal A - start backend
+
+```bash
+cd backend
+python main.py
+```
+
+Backend runs on:
+- `http://localhost:8000`
+
+### Terminal B - start frontend
+
+From project root:
+
+```bash
+npm run dev
+```
+
+Frontend runs on:
+- `http://localhost:5173`
+
+## Optional commands
+
+- Frontend production build:
+  ```bash
+  npm run build
+  ```
+- Backend quick health check:
+  - Open `http://localhost:8000/` in browser
 
 ## Notes
-- This is a frontend-only showcase. API calls (file upload) will fail gracefully or show errors because the backend is not included in this package.
-- The focus is on the UI/UX and component structure.
+
+- Keep both backend and frontend running during use.
+- If `vite` is not recognized, run `npm install` again in project root.
+- If sentence-transformer model download is slow, retry once; first run can take longer.
