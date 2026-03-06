@@ -5,7 +5,6 @@ import {
     ShieldAlert, ShieldCheck, AlertTriangle, ArrowLeft
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import PdfViewer from './PdfViewer';
 
 const COLORS = [
     { bg: '#ef4444', light: '#fef2f2', border: '#fecaca', text: '#dc2626' },
@@ -56,15 +55,13 @@ function MiniBar({ value, color }) {
     );
 }
 
-const ReportView = ({ data, pdfFile, onReset }) => {
+const ReportView = ({ data, onReset }) => {
     const [expandedMatchIdx, setExpandedMatchIdx] = useState(null);
     const [activePanel, setActivePanel] = useState('matches');
 
-    const overallPct = Math.round(data.overall_similarity ?? data.semantic_similarity ?? 0);
-    const semanticPct = Math.round(data.semantic_similarity ?? 0);
+    const semanticPct = Math.round(data.semantic_similarity ?? data.overall_similarity ?? 0);
     const lexicalPct = Math.round(data.lexical_similarity ?? 0);
-    const fingerprintPct = Math.round(data.fingerprint_similarity ?? 0);
-    const severity = getSeverity(overallPct);
+    const severity = getSeverity(semanticPct);
     const SeverityIcon = severity.icon;
 
     const hasNewFormat = data.matches?.length > 0 && (
@@ -125,7 +122,7 @@ const ReportView = ({ data, pdfFile, onReset }) => {
     };
 
     const toggleMatch = (idx) => setExpandedMatchIdx(expandedMatchIdx === idx ? null : idx);
-    const gaugeColor = overallPct >= 60 ? '#ef4444' : overallPct >= 30 ? '#f59e0b' : '#10b981';
+    const gaugeColor = semanticPct >= 60 ? '#ef4444' : semanticPct >= 30 ? '#f59e0b' : '#10b981';
 
     return (
         <div className="w-full" style={{ fontFamily: "'Inter', sans-serif" }}>
@@ -156,19 +153,18 @@ const ReportView = ({ data, pdfFile, onReset }) => {
             </div>
 
             {/* ── Main Content: Document + Sidebar ── */}
-            <div className="flex w-full" style={{ height: 'calc(100vh - 80px - 56px)' }}>
+            <div className="flex w-full" style={{ minHeight: 'calc(100vh - 80px - 56px)' }}>
 
-                {/* Left: PDF Viewer or Extracted Text */}
-                <div className="flex-1 overflow-hidden bg-slate-100 flex flex-col" style={{ minHeight: 0 }}>
+                {/* Left: Scrollable Document */}
+                <div className="flex-1 overflow-y-auto bg-slate-100 p-6 lg:p-8">
                     <motion.div
                         initial={{ opacity: 0, y: 14 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ delay: 0.1, duration: 0.4 }}
-                        className="flex-1 flex flex-col m-4 lg:m-6 bg-white rounded-2xl shadow-lg border border-slate-200 overflow-hidden"
-                        style={{ minHeight: 0 }}
+                        className="w-full min-h-full bg-white rounded-2xl shadow-lg border border-slate-200 overflow-hidden flex flex-col"
                     >
                         {/* macOS-style title bar */}
-                        <div className="flex items-center gap-2 px-5 py-3 bg-slate-50 border-b border-slate-200 shrink-0">
+                        <div className="flex items-center gap-2 px-5 py-3 bg-slate-50 border-b border-slate-200">
                             <div className="w-3 h-3 rounded-full bg-red-400" />
                             <div className="w-3 h-3 rounded-full bg-amber-400" />
                             <div className="w-3 h-3 rounded-full bg-emerald-400" />
@@ -179,22 +175,15 @@ const ReportView = ({ data, pdfFile, onReset }) => {
                                 {data.chunk_count != null && ` • ${data.chunk_count} chunks`}
                             </span>
                         </div>
-
-                        {/* PDF Viewer or extracted text fallback */}
-                        {pdfFile && (data.filename || '').toLowerCase().endsWith('.pdf') ? (
-                            <div className="flex-1 overflow-hidden" style={{ minHeight: 0 }}>
-                                <PdfViewer file={pdfFile} />
-                            </div>
-                        ) : (
-                            <div
-                                className="flex-1 overflow-y-auto px-10 sm:px-14 py-10 sm:py-12 text-base sm:text-[17px] leading-[1.95] text-slate-800 whitespace-pre-wrap"
-                                style={{ fontFamily: '"Georgia", "Times New Roman", serif', textAlign: 'justify' }}
-                            >
-                                {data.source_text ? renderContent() : (
-                                    <p className="text-slate-400 italic text-center py-20">No text could be extracted from this document.</p>
-                                )}
-                            </div>
-                        )}
+                        {/* Text content */}
+                        <div
+                            className="px-10 sm:px-14 py-10 sm:py-12 text-base sm:text-[17px] leading-[1.95] text-slate-800 whitespace-pre-wrap"
+                            style={{ fontFamily: '"Georgia", "Times New Roman", serif', textAlign: 'justify' }}
+                        >
+                            {data.source_text ? renderContent() : (
+                                <p className="text-slate-400 italic text-center py-20">No text could be extracted from this document.</p>
+                            )}
+                        </div>
                     </motion.div>
                 </div>
 
@@ -207,21 +196,14 @@ const ReportView = ({ data, pdfFile, onReset }) => {
 
                         <div className="flex items-center gap-4">
                             <div className="relative shrink-0">
-                                <RingGauge value={overallPct} color={gaugeColor} size={84} stroke={7} />
+                                <RingGauge value={semanticPct} color={gaugeColor} size={84} stroke={7} />
                                 <div className="absolute inset-0 flex flex-col items-center justify-center">
-                                    <span className="text-xl font-extrabold text-slate-900 leading-none">{overallPct}%</span>
-                                    <span className="text-[9px] text-slate-400 uppercase tracking-wider mt-0.5">Overall</span>
+                                    <span className="text-xl font-extrabold text-slate-900 leading-none">{semanticPct}%</span>
+                                    <span className="text-[9px] text-slate-400 uppercase tracking-wider mt-0.5">Semantic</span>
                                 </div>
                             </div>
 
                             <div className="flex-1 space-y-3">
-                                <div>
-                                    <div className="flex justify-between text-xs mb-1">
-                                        <span className="text-slate-500 font-medium">Overall</span>
-                                        <span className="font-bold text-red-500">{overallPct}%</span>
-                                    </div>
-                                    <MiniBar value={overallPct} color="#ef4444" />
-                                </div>
                                 <div>
                                     <div className="flex justify-between text-xs mb-1">
                                         <span className="text-slate-500 font-medium">Semantic (AI)</span>
@@ -235,13 +217,6 @@ const ReportView = ({ data, pdfFile, onReset }) => {
                                         <span className="font-bold text-teal-600">{lexicalPct}%</span>
                                     </div>
                                     <MiniBar value={lexicalPct} color="#14b8a6" />
-                                </div>
-                                <div>
-                                    <div className="flex justify-between text-xs mb-1">
-                                        <span className="text-slate-500 font-medium">Fingerprint</span>
-                                        <span className="font-bold text-violet-600">{fingerprintPct}%</span>
-                                    </div>
-                                    <MiniBar value={fingerprintPct} color="#8b5cf6" />
                                 </div>
                             </div>
                         </div>
@@ -284,14 +259,10 @@ const ReportView = ({ data, pdfFile, onReset }) => {
                                             <p className="font-semibold text-slate-700">No matches found</p>
                                             <p className="text-xs text-slate-400 mt-1">This document appears to be original.</p>
                                         </div>
-                                    ) : (
-                                        <>
-                                            {data.matches.map((match, idx) => {
+                                    ) : data.matches.map((match, idx) => {
                                         const col = COLORS[idx % COLORS.length];
                                         const semPct = Math.round((match.semantic_similarity ?? match.similarity ?? 0) * 100);
                                         const lexPct = Math.round((match.lexical_similarity ?? 0) * 100);
-                                        const combinedPct = Math.round((match.combined_similarity ?? match.semantic_similarity ?? 0) * 100);
-                                        const sentenceMatches = Array.isArray(match.similar_sentences) ? match.similar_sentences : [];
                                         const isOpen = expandedMatchIdx === idx;
                                         return (
                                             <div key={idx} className="rounded-xl border border-slate-200 overflow-hidden shadow-sm">
@@ -307,14 +278,10 @@ const ReportView = ({ data, pdfFile, onReset }) => {
                                                     </div>
                                                     <div className="flex-1 min-w-0">
                                                         <div className="text-sm font-semibold text-slate-700 truncate">{match.file_name || match.filename}</div>
-                                                        <div className="mt-1.5"><MiniBar value={combinedPct} color={col.bg} /></div>
+                                                        <div className="mt-1.5"><MiniBar value={semPct} color={col.bg} /></div>
                                                         <div className="flex gap-3 mt-1 text-[11px] text-slate-400">
-                                                            <span>Overall <span className="font-bold" style={{ color: col.text }}>{combinedPct}%</span></span>
-                                                            <span>Sem <span className="font-bold text-slate-500">{semPct}%</span></span>
+                                                            <span>Sem <span className="font-bold" style={{ color: col.text }}>{semPct}%</span></span>
                                                             <span>Lex <span className="font-bold text-slate-500">{lexPct}%</span></span>
-                                                        </div>
-                                                        <div className="flex gap-3 mt-1 text-[10px] text-slate-400">
-                                                            <span>{sentenceMatches.length} sentence match</span>
                                                         </div>
                                                     </div>
                                                     <ChevronRight size={14} className={`text-slate-300 transition-transform duration-200 shrink-0 ${isOpen ? 'rotate-90 text-brand-500' : ''}`} />
@@ -327,18 +294,23 @@ const ReportView = ({ data, pdfFile, onReset }) => {
                                                             className="overflow-hidden"
                                                         >
                                                             <div className="px-3 pb-3 space-y-2 border-t border-slate-100 pt-2 bg-slate-50/60">
-                                                                {sentenceMatches.length > 0 && (
-                                                                    <div className="rounded-lg p-3 bg-white border border-slate-200 space-y-2">
-                                                                        <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 mb-1">Similar sentences</div>
-                                                                        {sentenceMatches.map((sm, sIdx) => (
-                                                                            <div key={sIdx} className="rounded-md border border-slate-200 p-2 bg-slate-50">
-                                                                                <p className="text-[11px] text-slate-700 leading-relaxed"><span className="font-semibold text-brand-600">Your:</span> "{sm.query_sentence}"</p>
-                                                                                <p className="text-[11px] text-slate-700 leading-relaxed mt-1"><span className="font-semibold" style={{ color: col.text }}>Repo:</span> "{sm.matched_sentence}"</p>
-                                                                                <p className="text-[10px] text-slate-500 mt-1">Sem {Math.round((sm.semantic_similarity ?? 0) * 100)}% • Lex {Math.round((sm.lexical_similarity ?? 0) * 100)}%</p>
-                                                                            </div>
-                                                                        ))}
+                                                                {match.query_text_preview && (
+                                                                    <div className="rounded-lg p-3 bg-white border border-slate-200">
+                                                                        <div className="text-[10px] font-bold uppercase tracking-wider text-brand-500 mb-1">Your text</div>
+                                                                        <p className="text-xs text-slate-600 leading-relaxed italic">"{match.query_text_preview}"</p>
                                                                     </div>
                                                                 )}
+                                                                {match.matched_text_preview && (
+                                                                    <div className="rounded-lg p-3 bg-white border border-slate-200">
+                                                                        <div className="text-[10px] font-bold uppercase tracking-wider mb-1" style={{ color: col.text }}>Matched in repo</div>
+                                                                        <p className="text-xs text-slate-600 leading-relaxed italic">"{match.matched_text_preview}"</p>
+                                                                    </div>
+                                                                )}
+                                                                {match.matched_segments?.map((seg, sIdx) => (
+                                                                    <div key={sIdx} className="rounded-lg p-3 bg-white border border-slate-200">
+                                                                        <p className="text-xs text-slate-600 italic">"{seg.text}"</p>
+                                                                    </div>
+                                                                ))}
                                                             </div>
                                                         </motion.div>
                                                     )}
@@ -346,8 +318,6 @@ const ReportView = ({ data, pdfFile, onReset }) => {
                                             </div>
                                         );
                                     })}
-                                        </>
-                                    )}
                                 </motion.div>
                             )}
 

@@ -9,8 +9,7 @@ from pydantic import BaseModel
 from database import DatabaseManager
 from text_pipeline import process_document
 from document_store import save_document, list_documents, delete_document, get_stats, get_chunks_for_scan, get_chunks_with_embeddings, DB_PATH
-from embedding_pipeline import encode_chunks, find_matches, extract_top_similar_sentences
-from diff_checker import compute_diff
+from embedding_pipeline import encode_chunks, find_matches
 
 app = FastAPI(title="NSU PlagiChecker Auth")
 
@@ -43,12 +42,6 @@ class AddTeacherRequest(BaseModel):
     name: str
     email: str
     password: str
-
-
-class DiffCompareRequest(BaseModel):
-    text_a: str
-    text_b: str
-    context_lines: int = 2
 
 # ==================== AUTH ENDPOINTS ====================
 
@@ -99,13 +92,6 @@ def delete_user(user_id: int):
     if not success:
         raise HTTPException(status_code=404, detail="User not found or cannot be deleted.")
     return {"success": True}
-
-
-@app.post("/diff/compare")
-def diff_compare(req: DiffCompareRequest):
-    if not req.text_a and not req.text_b:
-        raise HTTPException(status_code=400, detail="At least one text input is required.")
-    return compute_diff(req.text_a or "", req.text_b or "", context_lines=req.context_lines)
 
 @app.get("/")
 def health_check():
@@ -229,14 +215,12 @@ async def analyze_document(
             meta_dict["repo_type"] = repo_type
             meta_dict["owner_id"] = owner_id_val
 
-            semantic_similarity, lexical_similarity, fingerprint_similarity, overall_similarity, matches = 0.0, 0.0, 0.0, 0.0, []
-            top_similar_sentences = []
+            semantic_similarity, lexical_similarity, matches = 0.0, 0.0, []
             if not will_save and chunks:
                 repo_chunks = get_chunks_with_embeddings(repo_type=repo_type, owner_id=owner_id_val)
-                semantic_similarity, lexical_similarity, fingerprint_similarity, overall_similarity, matches = find_matches(
+                semantic_similarity, lexical_similarity, matches = find_matches(
                     chunks, repo_chunks, repo_type=repo_type, owner_id=owner_id_val
                 )
-                top_similar_sentences = extract_top_similar_sentences(matches)
         finally:
             try:
                 os.unlink(tmp_path)
@@ -244,12 +228,10 @@ async def analyze_document(
                 pass
         return {
             "source_text": cleaned_text,
-            "overall_similarity": overall_similarity,
+            "overall_similarity": semantic_similarity,
             "semantic_similarity": semantic_similarity,
             "lexical_similarity": lexical_similarity,
-            "fingerprint_similarity": fingerprint_similarity,
             "matches": matches,
-            "top_similar_sentences": top_similar_sentences,
             "filename": original_filename,
             "page_or_slide_count": meta.num_pages_or_slides,
             "chunk_count": meta.num_chunks,

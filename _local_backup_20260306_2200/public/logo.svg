@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 250" fill="none">
+  <!-- Shield with Brain Icon -->
+  <g transform="translate(20, 30)">
+    <!-- Document/Shield Shape -->
+    <path d="M30 10 L140 10 L170 40 L170 170 C170 185 155 200 140 210 L85 210 C70 200 55 185 55 170 L55 40 L30 10 Z" 
+          fill="white" stroke="#0284c7" stroke-width="6"/>
+    
+    <!-- Folded Corner -->
+    <path d="M140 10 L140 40 L170 40" fill="none" stroke="#0284c7" stroke-width="6"/>
+    
+    <!-- Brain/Network -->
+    <circle cx="85" cy="80" r="8" fill="#0ea5e9"/>
+    <circle cx="125" cy="80" r="8" fill="#0ea5e9"/>
+    <circle cx="65" cy="110" r="8" fill="#4f46e5"/>
+    <circle cx="105" cy="110" r="8" fill="#4f46e5"/>
+    <circle cx="145" cy="110" r="8" fill="#4f46e5"/>
+    <circle cx="85" cy="140" r="8" fill="#0ea5e9"/>
+    <circle cx="125" cy="140" r="8" fill="#0ea5e9"/>
+    <circle cx="105" cy="170" r="8" fill="#4f46e5"/>
+    
+    <!-- Network Lines -->
+    <line x1="85" y1="80" x2="65" y2="110" stroke="#0ea5e9" stroke-width="3"/>
+    <line x1="85" y1="80" x2="105" y2="110" stroke="#0ea5e9" stroke-width="3"/>
+    <line x1="125" y1="80" x2="105" y2="110" stroke="#0ea5e9" stroke-width="3"/>
+    <line x1="125" y1="80" x2="145" y2="110" stroke="#0ea5e9" stroke-width="3"/>
+    <line x1="65" y1="110" x2="85" y2="140" stroke="#0ea5e9" stroke-width="3"/>
+    <line x1="105" y1="110" x2="85" y2="140" stroke="#0ea5e9" stroke-width="3"/>
+    <line x1="105" y1="110" x2="125" y2="140" stroke="#0ea5e9" stroke-width="3"/>
+    <line x1="145" y1="110" x2="125" y2="140" stroke="#0ea5e9" stroke-width="3"/>
+    <line x1="85" y1="140" x2="105" y2="170" stroke="#0ea5e9" stroke-width="3"/>
+    <line x1="125" y1="140" x2="105" y2="170" stroke="#0ea5e9" stroke-width="3"/>
+  </g>
+
+  <!-- Text: NSU -->
+  <text x="220" y="140" font-family="Arial, sans-serif" font-weight="bold" font-size="90" fill="#0369a1">NSU</text>
+  
+  <!-- Text: PlagiChecker -->
+  <text x="220" y="210" font-family="Arial, sans-serif" font-weight="bold" font-size="70" fill="#0284c7">PlagiChecker</text>
+  
+
+</svg>

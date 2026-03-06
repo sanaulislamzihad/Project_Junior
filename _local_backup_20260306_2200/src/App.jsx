@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import { Routes, Route, useNavigate, Link } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from './context/AuthContext';
@@ -19,15 +19,10 @@ import { motion, AnimatePresence } from 'framer-motion';
 function MainApp() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
-  const storageKey = useMemo(
-    () => (user?.id ? `plagichecker:mainapp:${user.id}:${user.role}` : null),
-    [user?.id, user?.role]
-  );
 
   // Students default to 'diff' mode, others default to 'repo'
   const [appMode, setAppMode] = useState(user?.role === 'student' ? 'diff' : 'repo');
   const [analysisResult, setAnalysisResult] = useState(null);
-  const [uploadedFile, setUploadedFile] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [addRepoAnalyzing, setAddRepoAnalyzing] = useState(false);
   const [pastDocsRefresh, setPastDocsRefresh] = useState(0);
@@ -36,56 +31,6 @@ function MainApp() {
   // Compare against: 'university' | 'personal' (used when we implement compare logic)
   const [compareAgainst, setCompareAgainst] = useState(user?.role === 'teacher' ? 'personal' : 'university');
   const [checkDragActive, setCheckDragActive] = useState(false);
-  const [stateHydrated, setStateHydrated] = useState(false);
-
-  useEffect(() => {
-    const roleDefaultMode = user?.role === 'student' ? 'diff' : 'repo';
-    const roleDefaultCompareAgainst = user?.role === 'teacher' ? 'personal' : 'university';
-
-    setAppMode(roleDefaultMode);
-    setCompareAgainst(roleDefaultCompareAgainst);
-    setAnalysisResult(null);
-    setUploadedFile(null);
-    setDiffData(null);
-
-    if (!storageKey) {
-      setStateHydrated(true);
-      return;
-    }
-
-    try {
-      const raw = localStorage.getItem(storageKey);
-      if (raw) {
-        const saved = JSON.parse(raw);
-        const allowedModes = user?.role === 'student' ? ['diff'] : ['repo', 'manage-repo', 'diff'];
-        if (allowedModes.includes(saved?.appMode)) setAppMode(saved.appMode);
-        if (saved?.analysisResult && typeof saved.analysisResult === 'object') setAnalysisResult(saved.analysisResult);
-        if (saved?.diffData && typeof saved.diffData === 'object') setDiffData(saved.diffData);
-        if (saved?.compareAgainst === 'personal' && user?.role === 'teacher') setCompareAgainst('personal');
-      }
-    } catch (err) {
-      console.warn('Failed to restore UI state after refresh:', err);
-    } finally {
-      setStateHydrated(true);
-    }
-  }, [storageKey, user?.role]);
-
-  useEffect(() => {
-    if (!stateHydrated || !storageKey) return;
-    try {
-      localStorage.setItem(
-        storageKey,
-        JSON.stringify({
-          appMode,
-          compareAgainst,
-          analysisResult,
-          diffData,
-        })
-      );
-    } catch (err) {
-      console.warn('Failed to persist UI state:', err);
-    }
-  }, [stateHydrated, storageKey, appMode, compareAgainst, analysisResult, diffData]);
 
   // Add to repository: save to DB, show ReportView
   const handleFileUpload = async (file) => {
@@ -102,7 +47,6 @@ function MainApp() {
       const response = await axios.post('http://localhost:8000/analyze', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
-      setUploadedFile(file);
       setAnalysisResult(response.data);
       setPastDocsRefresh((n) => n + 1);
     } catch (error) {
@@ -129,7 +73,6 @@ function MainApp() {
       const response = await axios.post('http://localhost:8000/analyze', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
-      setUploadedFile(file);
       setAnalysisResult(response.data);
     } catch (error) {
       console.error("Error checking document:", error);
@@ -161,7 +104,6 @@ function MainApp() {
 
   const resetApp = () => {
     setAnalysisResult(null);
-    setUploadedFile(null);
     setDiffData(null);
     setIsAnalyzing(false);
     setAddRepoAnalyzing(false);
@@ -169,7 +111,6 @@ function MainApp() {
   };
 
   const handleLogout = () => {
-    if (storageKey) localStorage.removeItem(storageKey);
     logout();
     navigate('/');
   };
@@ -361,7 +302,7 @@ function MainApp() {
                   </div>
                 </div>
               ) : (
-                <ReportView data={analysisResult} pdfFile={uploadedFile} onReset={resetApp} />
+                <ReportView data={analysisResult} onReset={resetApp} />
               )}
             </>
           )}
