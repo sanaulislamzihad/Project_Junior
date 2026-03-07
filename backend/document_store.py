@@ -128,8 +128,13 @@ def save_document(
         conn.commit()
         # Invalidate FAISS cache for this repo so next similarity search rebuilds index from DB.
         try:
-            from faiss_index import invalidate_cached_index
-            invalidate_cached_index(repo_type, owner_id)
+            from faiss_index import invalidate_cached_index, invalidate_all_cached_indexes
+            if repo_type == "university":
+                # A university doc affects EVERYONE's "both" cache, so easiest is to clear all
+                invalidate_all_cached_indexes()
+            else:
+                invalidate_cached_index(repo_type, owner_id)
+                invalidate_cached_index("both", owner_id)
         except Exception:
             pass
     finally:
@@ -159,7 +164,16 @@ def get_chunks_with_embeddings(repo_type: str = "university", owner_id: int = No
     conn = get_connection(db_path)
     cursor = conn.cursor()
     try:
-        if repo_type == "personal" and owner_id is not None:
+        if repo_type == "both" and owner_id is not None:
+            cursor.execute(
+                """SELECT dc.document_id, d.file_name, dc.chunk_index, dc.chunk_text, ce.embedding
+                   FROM document_chunks dc
+                   JOIN documents d ON dc.document_id = d.document_id
+                   LEFT JOIN document_chunk_embeddings ce ON dc.document_id = ce.document_id AND dc.chunk_index = ce.chunk_index
+                   WHERE d.repo_type = 'university' OR (d.repo_type = 'personal' AND d.owner_id = ?)""",
+                (owner_id,)
+            )
+        elif repo_type == "personal" and owner_id is not None:
             cursor.execute(
                 """SELECT dc.document_id, d.file_name, dc.chunk_index, dc.chunk_text, ce.embedding
                    FROM document_chunks dc
@@ -191,7 +205,15 @@ def get_chunks_for_scan(repo_type: str = "university", owner_id: int = None, db_
     conn = get_connection(db_path)
     cursor = conn.cursor()
     try:
-        if repo_type == "personal" and owner_id is not None:
+        if repo_type == "both" and owner_id is not None:
+            cursor.execute(
+                """SELECT dc.document_id, dc.chunk_index, dc.chunk_text
+                   FROM document_chunks dc
+                   JOIN documents d ON dc.document_id = d.document_id
+                   WHERE d.repo_type = 'university' OR (d.repo_type = 'personal' AND d.owner_id = ?)""",
+                (owner_id,)
+            )
+        elif repo_type == "personal" and owner_id is not None:
             cursor.execute(
                 """SELECT dc.document_id, dc.chunk_index, dc.chunk_text
                    FROM document_chunks dc

@@ -1,9 +1,11 @@
 import React, { useCallback, useState } from 'react';
 import { Upload, FileText, AlertCircle, Check } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import AnalyzingProgress from './AnalyzingProgress';
 
 const UploadZone = ({ onUpload, isAnalyzing, user, showHero = true, title = 'Upload your Document', description = 'Drag & drop or browse files', loadingLabel = 'Analyzing Document...', loadingSubLabel = 'Cross-checking against repository...' }) => {
     const [dragActive, setDragActive] = useState(false);
+    const [currentFile, setCurrentFile] = useState(null);
     const [error, setError] = useState(null);
     const repoLabel = user?.role === 'admin' ? 'Whole University repository' : 'My repository (personal)';
 
@@ -42,6 +44,7 @@ const UploadZone = ({ onUpload, isAnalyzing, user, showHero = true, title = 'Upl
             return;
         }
         setError(null);
+        setCurrentFile(file);
         onUpload(file);
     };
 
@@ -122,20 +125,7 @@ const UploadZone = ({ onUpload, isAnalyzing, user, showHero = true, title = 'Upl
 
                             <AnimatePresence mode="wait">
                                 {isAnalyzing ? (
-                                    <motion.div
-                                        key="analyzing"
-                                        initial={{ opacity: 0 }}
-                                        animate={{ opacity: 1 }}
-                                        exit={{ opacity: 0 }}
-                                        className="flex flex-col items-center"
-                                    >
-                                        <div className="relative w-16 h-16 mb-4">
-                                            <div className="absolute inset-0 border-4 border-slate-100 rounded-full"></div>
-                                            <div className="absolute inset-0 border-4 border-brand-500 rounded-full border-t-transparent animate-spin"></div>
-                                        </div>
-                                        <p className="text-lg font-medium text-slate-700">{loadingLabel}</p>
-                                        <p className="text-sm text-slate-400 mt-2">{loadingSubLabel}</p>
-                                    </motion.div>
+                                    <AnalyzingProgress file={currentFile} title={loadingLabel} subtitle={loadingSubLabel} />
                                 ) : (
                                     <motion.div
                                         key="idle"
