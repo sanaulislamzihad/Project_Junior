@@ -147,11 +147,11 @@ def documents_delete(document_id: str, repo_type: str = "university", owner_id: 
 
 @app.get("/documents/scan")
 def documents_scan(repo_type: str = "university", owner_id: int = None):
-    """Get chunks for similarity scan. repo_type: 'university' (whole university) | 'personal' (teacher repo). For personal, pass owner_id=teacher user id."""
-    if repo_type not in ("university", "personal"):
-        raise HTTPException(status_code=400, detail="repo_type must be 'university' or 'personal'.")
-    if repo_type == "personal" and owner_id is None:
-        raise HTTPException(status_code=400, detail="owner_id required for personal repository.")
+    """Get chunks for similarity scan. repo_type: 'university' | 'personal' | 'both'. For personal/both, pass owner_id=teacher user id."""
+    if repo_type not in ("university", "personal", "both"):
+        raise HTTPException(status_code=400, detail="repo_type must be 'university', 'personal', or 'both'.")
+    if repo_type in ("personal", "both") and owner_id is None:
+        raise HTTPException(status_code=400, detail="owner_id required for personal or both repository.")
     chunks = get_chunks_for_scan(repo_type=repo_type, owner_id=owner_id)
     return {"repo_type": repo_type, "owner_id": owner_id, "chunk_count": len(chunks), "chunks": chunks}
 
@@ -174,10 +174,13 @@ async def analyze_document(
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Only PDF and PPTX files are supported.")
     repo_type = (repo_type or "university").lower()
-    if repo_type not in ("university", "personal"):
-        raise HTTPException(status_code=400, detail="repo_type must be 'university' or 'personal'.")
+    if repo_type not in ("university", "personal", "both"):
+        raise HTTPException(status_code=400, detail="repo_type must be 'university', 'personal', or 'both'.")
     will_save = add_to_repo.lower() in ("true", "1", "yes")
     if will_save:
+        # Prevent saving to 'both' repository since it's only meant for checking
+        if repo_type == "both":
+            raise HTTPException(status_code=400, detail="Cannot save to 'both' repos at once. Choose one.")
         if repo_type == "university" and role != "admin":
             raise HTTPException(status_code=403, detail="Only admin can upload to Whole University repository.")
         if repo_type == "personal":
@@ -186,10 +189,10 @@ async def analyze_document(
             if not user_id or not user_id.strip():
                 raise HTTPException(status_code=400, detail="user_id required for personal repository.")
     try:
-        owner_id_val = int(user_id.strip()) if repo_type == "personal" and user_id and user_id.strip() else None
+        owner_id_val = int(user_id.strip()) if repo_type in ("personal", "both") and user_id and user_id.strip() else None
     except ValueError:
         owner_id_val = None
-        if repo_type == "personal":
+        if repo_type in ("personal", "both"):
             raise HTTPException(status_code=400, detail="user_id must be a number.")
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:

@@ -3,7 +3,7 @@ import axios from 'axios';
 import { FileText, ChevronDown, ChevronUp, Trash2, Eye, X, RefreshCw } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
-const PastDocuments = ({ user, refreshKey = 0 }) => {
+const PastDocuments = ({ user, refreshKey = 0, adminRepoMode = false }) => {
     const [documents, setDocuments] = useState([]);
     const [loading, setLoading] = useState(false);
     const [expanded, setExpanded] = useState(true);
@@ -11,8 +11,8 @@ const PastDocuments = ({ user, refreshKey = 0 }) => {
     const [deleting, setDeleting] = useState(null);
     const [fetchError, setFetchError] = useState(null);
 
-    const repoType = user?.role === 'admin' ? 'university' : 'personal';
-    const ownerId = user?.role === 'teacher' ? user?.id : null;
+    const repoType = adminRepoMode ? 'university' : (user?.role === 'admin' ? 'university' : 'personal');
+    const ownerId = adminRepoMode ? null : (user?.role === 'teacher' ? user?.id : null);
 
     const fetchDocuments = async () => {
         setLoading(true);
@@ -78,7 +78,7 @@ const PastDocuments = ({ user, refreshKey = 0 }) => {
                         <FileText className="w-5 h-5 text-brand-500" />
                         Past repository ({documents.length})
                         <span className="text-sm font-medium text-slate-500 ml-1">
-                            {user?.role === 'teacher' ? '(your uploads)' : '(whole university)'}
+                            {adminRepoMode || user?.role === 'admin' ? '(whole university)' : '(your uploads)'}
                         </span>
                     </span>
                     {expanded ? <ChevronUp className="w-5 h-5" /> : <ChevronDown className="w-5 h-5" />}

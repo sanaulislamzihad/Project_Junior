@@ -12,6 +12,7 @@ import LoginPage from './components/LoginPage';
 import RegisterPage from './components/RegisterPage';
 import AdminDashboard from './components/AdminDashboard';
 import ProtectedRoute from './components/ProtectedRoute';
+import AnalyzingProgress from './components/AnalyzingProgress';
 import { LogOut, ShieldCheck, GraduationCap, User, Database, FolderOpen, Upload, ArrowRightLeft } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -33,14 +34,15 @@ function MainApp() {
   const [pastDocsRefresh, setPastDocsRefresh] = useState(0);
   const [checkAnalyzing, setCheckAnalyzing] = useState(false);
   const [diffData, setDiffData] = useState(null);
-  // Compare against: 'university' | 'personal' (used when we implement compare logic)
-  const [compareAgainst, setCompareAgainst] = useState(user?.role === 'teacher' ? 'personal' : 'university');
+  // Compare against: array of selected repositories ['university', 'personal']
+  const [compareAgainst, setCompareAgainst] = useState(user?.role === 'teacher' ? ['personal'] : ['university']);
   const [checkDragActive, setCheckDragActive] = useState(false);
   const [stateHydrated, setStateHydrated] = useState(false);
+  const [processingFile, setProcessingFile] = useState(null);
 
   useEffect(() => {
     const roleDefaultMode = user?.role === 'student' ? 'diff' : 'repo';
-    const roleDefaultCompareAgainst = user?.role === 'teacher' ? 'personal' : 'university';
+    const roleDefaultCompareAgainst = user?.role === 'teacher' ? ['personal'] : ['university'];
 
     setAppMode(roleDefaultMode);
     setCompareAgainst(roleDefaultCompareAgainst);
@@ -61,7 +63,7 @@ function MainApp() {
         if (allowedModes.includes(saved?.appMode)) setAppMode(saved.appMode);
         if (saved?.analysisResult && typeof saved.analysisResult === 'object') setAnalysisResult(saved.analysisResult);
         if (saved?.diffData && typeof saved.diffData === 'object') setDiffData(saved.diffData);
-        if (saved?.compareAgainst === 'personal' && user?.role === 'teacher') setCompareAgainst('personal');
+        if (saved?.compareAgainst) setCompareAgainst(saved.compareAgainst);
       }
     } catch (err) {
       console.warn('Failed to restore UI state after refresh:', err);
@@ -117,14 +119,24 @@ function MainApp() {
 
   // Check document: disabled for now, will work when compare function is added
   const handleCheckDocument = async (file) => {
+    setProcessingFile(file);
     setCheckAnalyzing(true);
     const formData = new FormData();
     formData.append('file', file);
     formData.append('filename_override', file.name || '');
-    formData.append('repo_type', compareAgainst === 'university' ? 'university' : 'personal');
+
+    // Determine repo_type based on selection
+    let repoTypeValue = 'university';
+    if (compareAgainst.includes('university') && compareAgainst.includes('personal')) {
+      repoTypeValue = 'both';
+    } else if (compareAgainst.includes('personal')) {
+      repoTypeValue = 'personal';
+    }
+    formData.append('repo_type', repoTypeValue);
+
     formData.append('role', user?.role || 'teacher');
     formData.append('add_to_repo', 'false');
-    if (compareAgainst === 'personal' && user?.id) formData.append('user_id', String(user.id));
+    if (repoTypeValue !== 'university' && user?.id) formData.append('user_id', String(user.id));
     try {
       const response = await axios.post('http://localhost:8000/analyze', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
@@ -138,6 +150,7 @@ function MainApp() {
       alert("Failed to analyze document. " + msg + hint);
     } finally {
       setCheckAnalyzing(false);
+      setProcessingFile(null);
     }
   };
 
@@ -289,19 +302,53 @@ function MainApp() {
                         <div className="px-8 py-5 border-b border-slate-100 bg-slate-50/30">
                           <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">Target Repository</p>
                           <div className="flex gap-4">
-                            <button type="button" onClick={() => setCompareAgainst('university')} className={`flex items-center gap-3 px-6 py-4 rounded-2xl border-2 text-left transition-all flex-1 ${compareAgainst === 'university' ? 'border-teal-500 bg-white text-teal-800 shadow-md ring-4 ring-teal-50' : 'border-slate-200 hover:border-slate-300 bg-slate-50/50 text-slate-600'}`}>
-                              <Database className={`w-5 h-5 shrink-0 transition-colors ${compareAgainst === 'university' ? 'text-teal-500' : 'text-slate-400'}`} />
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setCompareAgainst(prev => {
+                                  if (prev.includes('university')) {
+                                    // Prevent deselecting if it's the only one
+                                    if (prev.length === 1) return prev;
+                                    return prev.filter(r => r !== 'university');
+                                  } else {
+                                    return [...prev, 'university'];
+                                  }
+                                });
+                              }}
+                              className={`flex items-center gap-3 px-6 py-4 rounded-2xl border-2 text-left transition-all flex-1 ${compareAgainst.includes('university') ? 'border-teal-500 bg-white text-teal-800 shadow-md ring-4 ring-teal-50' : 'border-slate-200 hover:border-slate-300 bg-slate-50/50 text-slate-600'}`}
+                            >
+                              <div className={`w-5 h-5 rounded flex items-center justify-center shrink-0 border transition-colors ${compareAgainst.includes('university') ? 'bg-teal-500 border-teal-500' : 'bg-white border-slate-300'}`}>
+                                {compareAgainst.includes('university') && <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>}
+                              </div>
+                              <Database className={`w-5 h-5 shrink-0 transition-colors ${compareAgainst.includes('university') ? 'text-teal-500' : 'text-slate-400'}`} />
                               <div>
-                                <span className={`font-black text-base block ${compareAgainst === 'university' ? 'text-teal-700' : 'text-slate-600'}`}>University Repo</span>
-                                <span className={`text-xs font-medium ${compareAgainst === 'university' ? 'text-teal-600/70' : 'text-slate-400'}`}>Global matching database</span>
+                                <span className={`font-black text-base block ${compareAgainst.includes('university') ? 'text-teal-700' : 'text-slate-600'}`}>University Repo</span>
+                                <span className={`text-xs font-medium ${compareAgainst.includes('university') ? 'text-teal-600/70' : 'text-slate-400'}`}>Global matching database</span>
                               </div>
                             </button>
                             {user?.role === 'teacher' && (
-                              <button type="button" onClick={() => setCompareAgainst('personal')} className={`flex items-center gap-3 px-6 py-4 rounded-2xl border-2 text-left transition-all flex-1 ${compareAgainst === 'personal' ? 'border-teal-500 bg-white text-teal-800 shadow-md ring-4 ring-teal-50' : 'border-slate-200 hover:border-slate-300 bg-slate-50/50 text-slate-600'}`}>
-                                <FolderOpen className={`w-5 h-5 shrink-0 transition-colors ${compareAgainst === 'personal' ? 'text-teal-500' : 'text-slate-400'}`} />
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setCompareAgainst(prev => {
+                                    if (prev.includes('personal')) {
+                                      // Prevent deselecting if it's the only one
+                                      if (prev.length === 1) return prev;
+                                      return prev.filter(r => r !== 'personal');
+                                    } else {
+                                      return [...prev, 'personal'];
+                                    }
+                                  });
+                                }}
+                                className={`flex items-center gap-3 px-6 py-4 rounded-2xl border-2 text-left transition-all flex-1 ${compareAgainst.includes('personal') ? 'border-teal-500 bg-white text-teal-800 shadow-md ring-4 ring-teal-50' : 'border-slate-200 hover:border-slate-300 bg-slate-50/50 text-slate-600'}`}
+                              >
+                                <div className={`w-5 h-5 rounded flex items-center justify-center shrink-0 border transition-colors ${compareAgainst.includes('personal') ? 'bg-teal-500 border-teal-500' : 'bg-white border-slate-300'}`}>
+                                  {compareAgainst.includes('personal') && <svg className="w-3.5 h-3.5 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" /></svg>}
+                                </div>
+                                <FolderOpen className={`w-5 h-5 shrink-0 transition-colors ${compareAgainst.includes('personal') ? 'text-teal-500' : 'text-slate-400'}`} />
                                 <div>
-                                  <span className={`font-black text-base block ${compareAgainst === 'personal' ? 'text-teal-700' : 'text-slate-600'}`}>My Repository</span>
-                                  <span className={`text-xs font-medium ${compareAgainst === 'personal' ? 'text-teal-600/70' : 'text-slate-400'}`}>Your personal uploads</span>
+                                  <span className={`font-black text-base block ${compareAgainst.includes('personal') ? 'text-teal-700' : 'text-slate-600'}`}>My Repository</span>
+                                  <span className={`text-xs font-medium ${compareAgainst.includes('personal') ? 'text-teal-600/70' : 'text-slate-400'}`}>Your personal uploads</span>
                                 </div>
                               </button>
                             )}
@@ -330,14 +377,7 @@ function MainApp() {
                             <label htmlFor="check-file-upload" className={`relative overflow-hidden group flex flex-col items-center justify-center h-72 w-full rounded-2xl border-2 border-dashed transition-all duration-300 ease-out cursor-pointer ${checkDragActive ? 'border-brand-500 bg-brand-50/50 scale-[1.01] shadow-inner' : 'border-slate-200 hover:border-brand-400 hover:bg-slate-50/30'}`}>
                               <AnimatePresence mode="wait">
                                 {checkAnalyzing ? (
-                                  <motion.div key="analyzing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex flex-col items-center">
-                                    <div className="relative w-16 h-16 mb-4">
-                                      <div className="absolute inset-0 border-4 border-slate-100 rounded-full"></div>
-                                      <div className="absolute inset-0 border-4 border-brand-500 rounded-full border-t-transparent animate-spin"></div>
-                                    </div>
-                                    <p className="font-black text-xl text-slate-700">Analyzing Document...</p>
-                                    <p className="text-sm font-medium text-slate-400 mt-2">Checking for AI & Plagiarism matches</p>
-                                  </motion.div>
+                                  <AnalyzingProgress file={processingFile} />
                                 ) : (
                                   <motion.div key="idle" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} className="flex flex-col items-center z-10">
                                     <div className={`p-6 rounded-3xl mb-4 transition-all duration-300 ${checkDragActive ? 'bg-brand-100 text-brand-600 scale-110 shadow-lg' : 'bg-slate-50 text-slate-400 group-hover:bg-white group-hover:text-brand-500 group-hover:shadow-xl group-hover:-translate-y-2'}`}>

@@ -27,6 +27,8 @@ DEFAULT_TOP_K = 10
 
 def _index_key(repo_type: str, owner_id) -> str:
     # Build a unique key for this repository so we can cache one index per repo.
+    if repo_type == "both" and owner_id is not None:
+        return f"both_{owner_id}"
     if repo_type == "personal" and owner_id is not None:
         # Personal repo: key is personal_<teacher user id>.
         return f"personal_{owner_id}"
