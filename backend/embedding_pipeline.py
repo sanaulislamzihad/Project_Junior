@@ -117,7 +117,13 @@ def _extract_common_portions(text_a: str, text_b: str, min_chars: int = 18, top_
     return portions
 
 
-def _sentence_level_matches(query_text: str, matched_text: str, min_semantic: float, min_lexical: float) -> List[dict]:
+def _sentence_level_matches(
+    query_text: str,
+    matched_text: str,
+    min_semantic: float,
+    min_lexical: float,
+    min_fingerprint: float = 0.08,
+) -> List[dict]:
     # Find sentence-to-sentence matches to explain why a chunk matched.
     q_sentences = _split_sentences(query_text)
     m_sentences = _split_sentences(matched_text)
@@ -135,15 +141,17 @@ def _sentence_level_matches(query_text: str, matched_text: str, min_semantic: fl
         for j, m_vec in enumerate(m_emb):
             sem = cosine_similarity(q_vec, m_vec)
             lex = lexical_similarity(q_sentences[i], m_sentences[j])
-            if sem < min_semantic or lex < min_lexical:
+            fp = fingerprint_similarity(q_sentences[i], m_sentences[j])
+            if sem < min_semantic or lex < min_lexical or fp < min_fingerprint:
                 continue
-            score = (0.8 * sem) + (0.2 * lex)
+            score = (0.7 * sem) + (0.15 * lex) + (0.15 * fp)
             if best is None or score > best["score"]:
                 best = {
                     "query_sentence": q_sentences[i],
                     "matched_sentence": m_sentences[j],
                     "semantic_similarity": round(float(sem), 4),
                     "lexical_similarity": round(float(lex), 4),
+                    "fingerprint_similarity": round(float(fp), 4),
                     "score": score,
                 }
         if best is not None:
@@ -171,6 +179,7 @@ def _build_match_record(
         matched_text,
         min_semantic=DEFAULT_SENTENCE_SEMANTIC,
         min_lexical=DEFAULT_SENTENCE_LEXICAL,
+        min_fingerprint=DEFAULT_MIN_FINGERPRINT,
     )
     common_portions = _extract_common_portions(query_text, matched_text)
     # Reject non-explainable matches: must show sentence or exact common portion evidence.

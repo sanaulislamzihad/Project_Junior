@@ -7,7 +7,7 @@ import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RotateCcw } from 'lucide-re
 // Set PDF.js worker from CDN (matches installed version)
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
-const PdfViewer = ({ file }) => {
+const PdfViewer = ({ file, showTextLayer = true }) => {
     const [numPages, setNumPages] = useState(null);
     const [pageNumber, setPageNumber] = useState(1);
     const [scale, setScale] = useState(1.0);
@@ -104,7 +104,7 @@ const PdfViewer = ({ file }) => {
                             className="shadow-2xl"
                             loading=""
                             renderAnnotationLayer={true}
-                            renderTextLayer={true}
+                            renderTextLayer={showTextLayer}
                         />
                     </Document>
                 )}

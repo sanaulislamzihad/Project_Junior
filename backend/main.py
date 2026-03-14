@@ -1,8 +1,10 @@
 import os
 import tempfile
+import uuid
 from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 # Import our modules
@@ -11,8 +13,12 @@ from text_pipeline import process_document
 from document_store import save_document, list_documents, delete_document, get_stats, get_chunks_for_scan, get_chunks_with_embeddings, DB_PATH
 from embedding_pipeline import encode_chunks, find_matches, extract_top_similar_sentences
 from diff_checker import compute_diff
+from pdf_highlight_pipeline import highlight_pdf_matches
 
 app = FastAPI(title="NSU PlagiChecker Auth")
+
+ARTIFACTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "artifacts")
+os.makedirs(ARTIFACTS_DIR, exist_ok=True)
 
 # CORS setup
 app.add_middleware(
@@ -112,6 +118,15 @@ def health_check():
     return {"status": "active", "mode": "Auth-Only-Backend"}
 
 
+@app.get("/artifacts/{artifact_name}")
+def get_artifact(artifact_name: str):
+    safe_name = os.path.basename(artifact_name)
+    artifact_path = os.path.join(ARTIFACTS_DIR, safe_name)
+    if not os.path.isfile(artifact_path):
+        raise HTTPException(status_code=404, detail="Artifact not found.")
+    return FileResponse(artifact_path, media_type="application/pdf", filename=safe_name)
+
+
 @app.get("/documents/stats")
 def documents_stats():
     """Check how many documents/chunks are saved in documents.db (same DB used for uploads)."""
@@ -200,9 +215,10 @@ async def analyze_document(
             tmp.write(content)
             tmp_path = tmp.name
         try:
+            pdf_method = "pymupdf" if ext == ".pdf" else "pdfplumber"
             chunks, meta, cleaned_text = process_document(
                 tmp_path,
-                pdf_method="pdfplumber",
+                pdf_method=pdf_method,
                 chunk_strategy="words",
                 max_chunk_size=250,
                 overlap=60,
@@ -234,12 +250,20 @@ async def analyze_document(
 
             semantic_similarity, lexical_similarity, fingerprint_similarity, overall_similarity, matches = 0.0, 0.0, 0.0, 0.0, []
             top_similar_sentences = []
+            highlighted_pdf_url = None
+            highlight_summary = None
             if not will_save and chunks:
                 repo_chunks = get_chunks_with_embeddings(repo_type=repo_type, owner_id=owner_id_val)
                 semantic_similarity, lexical_similarity, fingerprint_similarity, overall_similarity, matches = find_matches(
                     chunks, repo_chunks, repo_type=repo_type, owner_id=owner_id_val
                 )
                 top_similar_sentences = extract_top_similar_sentences(matches)
+                if ext == ".pdf":
+                    safe_base_name = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in original_filename)
+                    artifact_name = f"{meta.document_id}_{uuid.uuid4().hex[:8]}_{safe_base_name}"
+                    artifact_path = os.path.join(ARTIFACTS_DIR, artifact_name)
+                    highlight_summary = highlight_pdf_matches(tmp_path, matches, artifact_path)
+                    highlighted_pdf_url = f"http://localhost:8000/artifacts/{artifact_name}"
         finally:
             try:
                 os.unlink(tmp_path)
@@ -253,6 +277,8 @@ async def analyze_document(
             "fingerprint_similarity": fingerprint_similarity,
             "matches": matches,
             "top_similar_sentences": top_similar_sentences,
+            "highlighted_pdf_url": highlighted_pdf_url,
+            "highlight_summary": highlight_summary,
             "filename": original_filename,
             "page_or_slide_count": meta.num_pages_or_slides,
             "chunk_count": meta.num_chunks,

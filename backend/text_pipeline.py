@@ -24,6 +24,11 @@ try:
 except ImportError:
     pdfplumber = None
 
+try:
+    import fitz
+except ImportError:
+    fitz = None
+
 # PPTX extraction
 try:
     from pptx import Presentation
@@ -95,10 +100,27 @@ def extract_text_from_pdf_pdfplumber(pdf_path: str) -> List[Tuple[int, str]]:
     return result
 
 
+def extract_text_from_pdf_pymupdf(pdf_path: str) -> List[Tuple[int, str]]:
+    """Extract text page by page using PyMuPDF. Returns list of (page_number_1based, page_text)."""
+    if fitz is None:
+        raise ImportError("PyMuPDF is required. Install with: pip install pymupdf")
+    result = []
+    with fitz.open(pdf_path) as pdf:
+        for i, page in enumerate(pdf):
+            try:
+                text = page.get_text("text", sort=True) or ""
+                result.append((i + 1, text))
+            except Exception as e:
+                result.append((i + 1, f"[Error extracting page: {e}]"))
+    return result
+
+
 def extract_text_from_pdf(pdf_path: str, method: str = "pdfplumber") -> List[Tuple[int, str]]:
-    """Extract text from PDF page by page. method: 'pypdf2' or 'pdfplumber'."""
+    """Extract text from PDF page by page. method: 'pypdf2', 'pdfplumber', or 'pymupdf'."""
     if method == "pypdf2" and PyPDF2:
         return extract_text_from_pdf_pypdf2(pdf_path)
+    if method == "pymupdf" and fitz:
+        return extract_text_from_pdf_pymupdf(pdf_path)
     return extract_text_from_pdf_pdfplumber(pdf_path)
 
 

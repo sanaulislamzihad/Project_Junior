@@ -2,7 +2,7 @@ import React, { useMemo, useState } from 'react';
 import {
     ChevronRight, FileText, RotateCcw, CheckCircle,
     BarChart2, Info, Hash, Clock, Layers,
-    ShieldAlert, ShieldCheck, AlertTriangle, ArrowLeft
+    ShieldAlert, ShieldCheck, AlertTriangle, ArrowLeft, Download
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import PdfViewer from './PdfViewer';
@@ -59,6 +59,8 @@ function MiniBar({ value, color }) {
 const ReportView = ({ data, pdfFile, onReset }) => {
     const [expandedMatchIdx, setExpandedMatchIdx] = useState(null);
     const [activePanel, setActivePanel] = useState('matches');
+    const pdfSource = data.highlighted_pdf_url || pdfFile;
+    const isHighlightedPdf = Boolean(data.highlighted_pdf_url);
 
     const overallPct = Math.round(data.overall_similarity ?? data.semantic_similarity ?? 0);
     const semanticPct = Math.round(data.semantic_similarity ?? 0);
@@ -381,6 +383,17 @@ const ReportView = ({ data, pdfFile, onReset }) => {
 
                     {/* Sidebar footer */}
                     <div className="px-4 py-3 border-t border-slate-100 shrink-0 space-y-2">
+                        {data.highlighted_pdf_url && (
+                            <a
+                                href={data.highlighted_pdf_url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="w-full flex items-center justify-center gap-2 py-2.5 bg-amber-50 hover:bg-amber-100 text-amber-700 text-sm font-semibold rounded-xl border border-amber-200 transition-all"
+                            >
+                                <Download size={14} />
+                                Download Highlighted PDF
+                            </a>
+                        )}
                         <button
                             onClick={onReset}
                             className="w-full flex items-center justify-center gap-2 py-2.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold rounded-xl shadow-sm transition-all hover:shadow-md"
