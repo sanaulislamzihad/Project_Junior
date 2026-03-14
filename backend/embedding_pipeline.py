@@ -92,7 +92,7 @@ def _split_sentences(text: str) -> List[str]:
     cleaned = re.sub(r"\s+", " ", text).strip()
     if not cleaned:
         return []
-    parts = re.split(r"(?<=[.!?])\s+", cleaned)
+    parts = re.split(r"(?<=[.!?])\s+|\s+(?=(?:\(\d+\)|\d+[.)]|[-*])\s+)", cleaned)
     return [p.strip() for p in parts if p and len(p.strip()) >= 20]
 
 

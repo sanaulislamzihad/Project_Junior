@@ -37,7 +37,7 @@ def _split_sentences(text: str) -> List[str]:
     collapsed = re.sub(r"\s+", " ", text or "").strip()
     if not collapsed:
         return []
-    parts = re.split(r"(?<=[.!?])\s+", collapsed)
+    parts = re.split(r"(?<=[.!?])\s+|\s+(?=(?:\(\d+\)|\d+[.)]|[-*])\s+)", collapsed)
     return [part.strip() for part in parts if len(_normalize_sentence(part).split()) >= 4]
 
 
@@ -91,6 +91,16 @@ def _expand_clip(page: Any, bbox: Tuple[float, float, float, float], padding: fl
     return clip
 
 
+def _split_highlight_targets(text: str) -> List[str]:
+    """Split long numbered / bulleted runs into smaller locatable highlight targets."""
+    cleaned = re.sub(r"\s+", " ", text or "").strip()
+    if not cleaned:
+        return []
+    parts = re.split(r"(?=\b\d+[.)]\s+)|(?=(?:^|\s)[-*]\s+)", cleaned)
+    targets = [part.strip() for part in parts if len(_normalize_sentence(part).split()) >= 4]
+    return targets or [cleaned]
+
+
 def locate_matched_sentences(pdf_sentences: List[Dict], matches: List[Dict]) -> List[Dict]:
     """Map verified semantic matches back to sentences extracted from the original PDF."""
     located: List[Dict] = []
@@ -103,45 +113,46 @@ def locate_matched_sentences(pdf_sentences: List[Dict], matches: List[Dict]) -> 
             if not query_sentence:
                 continue
 
-            best = None
-            best_score = 0.0
-            best_lexical = 0.0
-            best_ngram = 0.0
-            best_sequence = 0.0
-            for candidate in pdf_sentences:
-                score, lexical, ngram, sequence = _rank_sentence_candidate(query_sentence, candidate)
-                if score > best_score:
-                    best = candidate
-                    best_score = score
-                    best_lexical = lexical
-                    best_ngram = ngram
-                    best_sequence = sequence
+            for target in _split_highlight_targets(query_sentence):
+                best = None
+                best_score = 0.0
+                best_lexical = 0.0
+                best_ngram = 0.0
+                best_sequence = 0.0
+                for candidate in pdf_sentences:
+                    score, lexical, ngram, sequence = _rank_sentence_candidate(target, candidate)
+                    if score > best_score:
+                        best = candidate
+                        best_score = score
+                        best_lexical = lexical
+                        best_ngram = ngram
+                        best_sequence = sequence
 
-            if best is None:
-                continue
-            if best_lexical < 0.45 and best_ngram < 0.18 and best_sequence < 0.72:
-                continue
+                if best is None:
+                    continue
+                if best_lexical < 0.45 and best_ngram < 0.18 and best_sequence < 0.72:
+                    continue
 
-            key = (best["page_number"], best["normalized_text"])
-            if key in seen:
-                continue
-            seen.add(key)
-            located.append(
-                {
-                    "page_number": best["page_number"],
-                    "bbox": best["bbox"],
-                    "match_index": match_index,
-                    "sentence_index": sentence_index,
-                    "pdf_sentence": best["text"],
-                    "query_sentence": query_sentence,
-                    "matched_sentence": repo_sentence,
-                    "matched_file_name": match.get("file_name"),
-                    "semantic_similarity": sentence_match.get("semantic_similarity"),
-                    "lexical_similarity": sentence_match.get("lexical_similarity"),
-                    "ngram_similarity": round(float(best_ngram), 4),
-                    "sequence_similarity": round(float(best_sequence), 4),
-                }
-            )
+                key = (best["page_number"], best["normalized_text"])
+                if key in seen:
+                    continue
+                seen.add(key)
+                located.append(
+                    {
+                        "page_number": best["page_number"],
+                        "bbox": best["bbox"],
+                        "match_index": match_index,
+                        "sentence_index": sentence_index,
+                        "pdf_sentence": best["text"],
+                        "query_sentence": target,
+                        "matched_sentence": repo_sentence,
+                        "matched_file_name": match.get("file_name"),
+                        "semantic_similarity": sentence_match.get("semantic_similarity"),
+                        "lexical_similarity": sentence_match.get("lexical_similarity"),
+                        "ngram_similarity": round(float(best_ngram), 4),
+                        "sequence_similarity": round(float(best_sequence), 4),
+                    }
+                )
     return located
 
 
@@ -162,10 +173,11 @@ def _sentence_search_queries(text: str) -> List[str]:
     words = cleaned.split()
     if len(words) >= 6:
         window = min(12, len(words))
-        add_query(" ".join(words[:window]))
-        add_query(" ".join(words[-window:]))
-        middle_start = max(0, (len(words) - window) // 2)
-        add_query(" ".join(words[middle_start:middle_start + window]))
+        step = max(4, window // 2)
+        for start in range(0, len(words), step):
+            segment = words[start:start + window]
+            if len(segment) >= 6:
+                add_query(" ".join(segment))
 
     for fragment in re.split(r"[,;:]\s+", cleaned):
         add_query(fragment)
@@ -194,13 +206,21 @@ def _region_to_bbox(region: Any) -> Tuple[float, float, float, float]:
 
 
 def _search_sentence_quads(page: Any, sentence: str, clip: Any = None) -> List[Any]:
+    queries = _sentence_search_queries(sentence)
+    if not queries:
+        return []
+
+    # Try exact / full-sentence queries first.
+    for query in queries[:2]:
+        hits = page.search_for(query, quads=True, clip=clip)
+        if hits:
+            return _dedupe_regions(hits)
+
     quads: List[Any] = []
-    for query in _sentence_search_queries(sentence):
+    for query in queries[2:]:
         hits = page.search_for(query, quads=True, clip=clip)
         if hits:
             quads.extend(hits)
-            if query == sentence or len(query.split()) >= 10:
-                break
     return _dedupe_regions(quads)
 
 
