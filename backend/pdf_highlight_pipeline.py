@@ -96,8 +96,8 @@ def locate_matched_sentences(pdf_sentences: List[Dict], matches: List[Dict]) -> 
     located: List[Dict] = []
     seen = set()
 
-    for match in matches or []:
-        for sentence_match in match.get("similar_sentences") or []:
+    for match_index, match in enumerate(matches or []):
+        for sentence_index, sentence_match in enumerate(match.get("similar_sentences") or []):
             query_sentence = (sentence_match.get("query_sentence") or "").strip()
             repo_sentence = (sentence_match.get("matched_sentence") or "").strip()
             if not query_sentence:
@@ -130,6 +130,8 @@ def locate_matched_sentences(pdf_sentences: List[Dict], matches: List[Dict]) -> 
                 {
                     "page_number": best["page_number"],
                     "bbox": best["bbox"],
+                    "match_index": match_index,
+                    "sentence_index": sentence_index,
                     "pdf_sentence": best["text"],
                     "query_sentence": query_sentence,
                     "matched_sentence": repo_sentence,
@@ -183,6 +185,12 @@ def _dedupe_regions(regions: List[Any]) -> List[Any]:
         seen.add(key)
         unique.append(region)
     return unique
+
+
+def _region_to_bbox(region: Any) -> Tuple[float, float, float, float]:
+    pymupdf = _require_pymupdf()
+    rect = pymupdf.Rect(region.rect if hasattr(region, "rect") else region)
+    return (float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1))
 
 
 def _search_sentence_quads(page: Any, sentence: str, clip: Any = None) -> List[Any]:
@@ -330,6 +338,7 @@ def highlight_pdf_matches(input_pdf_path: str, matches: List[Dict], output_pdf_p
             regions = _locate_sentence_regions(page, row)
             if not regions:
                 continue
+            row["regions"] = [_region_to_bbox(region) for region in regions]
 
             for region in regions:
                 annot = page.add_highlight_annot(region)

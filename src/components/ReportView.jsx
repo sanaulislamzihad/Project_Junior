@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
     ChevronRight, FileText, RotateCcw, CheckCircle,
     BarChart2, Info, Hash, Clock, Layers,
@@ -59,49 +59,17 @@ function MiniBar({ value, color }) {
 const ReportView = ({ data, pdfFile, onReset }) => {
     const [expandedMatchIdx, setExpandedMatchIdx] = useState(null);
     const [activePanel, setActivePanel] = useState('matches');
-    const [inlinePreviewUrl, setInlinePreviewUrl] = useState(null);
-    const [previewLoadError, setPreviewLoadError] = useState('');
-    const pdfSource = data.highlighted_pdf_url || pdfFile;
-    const isHighlightedPdf = Boolean(data.highlighted_pdf_url);
+    const matchCardRefs = useRef({});
+    const pdfSource = pdfFile || data.highlighted_pdf_url || null;
+    const interactiveHighlights = data.highlight_summary?.located_sentences || [];
 
     useEffect(() => {
-        let objectUrl = null;
-        let cancelled = false;
-
-        const loadPreview = async () => {
-            if (!isHighlightedPdf || typeof pdfSource !== 'string') {
-                setInlinePreviewUrl(null);
-                setPreviewLoadError('');
-                return;
-            }
-            try {
-                setPreviewLoadError('');
-                const response = await fetch(pdfSource);
-                if (!response.ok) {
-                    throw new Error(`Preview request failed: ${response.status}`);
-                }
-                const blob = await response.blob();
-                if (cancelled) return;
-                objectUrl = URL.createObjectURL(blob);
-                setInlinePreviewUrl(`${objectUrl}#toolbar=1&navpanes=0&view=FitH`);
-            } catch (error) {
-                if (!cancelled) {
-                    console.error('Highlighted PDF preview failed:', error);
-                    setInlinePreviewUrl(null);
-                    setPreviewLoadError('Preview could not be loaded here. Use the download button to open the highlighted PDF.');
-                }
-            }
-        };
-
-        loadPreview();
-
-        return () => {
-            cancelled = true;
-            if (objectUrl) {
-                URL.revokeObjectURL(objectUrl);
-            }
-        };
-    }, [isHighlightedPdf, pdfSource]);
+        if (activePanel !== 'matches' || expandedMatchIdx == null) return;
+        const node = matchCardRefs.current[expandedMatchIdx];
+        if (node?.scrollIntoView) {
+            node.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+    }, [activePanel, expandedMatchIdx]);
 
     const overallPct = Math.round(data.overall_similarity ?? data.semantic_similarity ?? 0);
     const semanticPct = Math.round(data.semantic_similarity ?? 0);
@@ -168,6 +136,22 @@ const ReportView = ({ data, pdfFile, onReset }) => {
     };
 
     const toggleMatch = (idx) => setExpandedMatchIdx(expandedMatchIdx === idx ? null : idx);
+    const openMatchFromHighlight = (highlight) => {
+        if (!highlight) return;
+        const directIndex = Number.isInteger(highlight.match_index) ? highlight.match_index : -1;
+        const targetIdx = directIndex >= 0 ? directIndex : (data.matches || []).findIndex((match) => {
+            const sameFile = (match.file_name || match.filename || '') === (highlight.matched_file_name || '');
+            if (!sameFile) return false;
+            return (match.similar_sentences || []).some((sentence) => (
+                sentence.query_sentence === highlight.query_sentence ||
+                sentence.matched_sentence === highlight.matched_sentence
+            ));
+        });
+        if (targetIdx >= 0) {
+            setActivePanel('matches');
+            setExpandedMatchIdx(targetIdx);
+        }
+    };
     const gaugeColor = overallPct >= 60 ? '#ef4444' : overallPct >= 30 ? '#f59e0b' : '#10b981';
 
     return (
@@ -226,25 +210,12 @@ const ReportView = ({ data, pdfFile, onReset }) => {
                         {/* PDF Viewer or extracted text fallback */}
                         {pdfSource && (data.filename || '').toLowerCase().endsWith('.pdf') ? (
                             <div className="flex-1 overflow-hidden bg-slate-100" style={{ minHeight: 0 }}>
-                                {isHighlightedPdf ? (
-                                    inlinePreviewUrl ? (
-                                        <iframe
-                                            src={inlinePreviewUrl}
-                                            title={data.filename || 'Highlighted PDF'}
-                                            className="w-full h-full border-0 bg-white"
-                                        />
-                                    ) : (
-                                        <div className="w-full h-full flex items-center justify-center bg-white text-center px-6">
-                                            <div>
-                                                <p className="text-sm font-medium text-slate-500">
-                                                    {previewLoadError || 'Loading highlighted PDF preview...'}
-                                                </p>
-                                            </div>
-                                        </div>
-                                    )
-                                ) : (
-                                    <PdfViewer file={pdfSource} showTextLayer />
-                                )}
+                                <PdfViewer
+                                    file={pdfSource}
+                                    showTextLayer={false}
+                                    interactiveHighlights={interactiveHighlights}
+                                    onHighlightClick={openMatchFromHighlight}
+                                />
                             </div>
                         ) : (
                             <div
@@ -355,7 +326,11 @@ const ReportView = ({ data, pdfFile, onReset }) => {
                                         const sentenceMatches = Array.isArray(match.similar_sentences) ? match.similar_sentences : [];
                                         const isOpen = expandedMatchIdx === idx;
                                         return (
-                                            <div key={idx} className="rounded-xl border border-slate-200 overflow-hidden shadow-sm">
+                                            <div
+                                                key={idx}
+                                                ref={(node) => { matchCardRefs.current[idx] = node; }}
+                                                className="rounded-xl border border-slate-200 overflow-hidden shadow-sm"
+                                            >
                                                 <button
                                                     className="w-full flex items-center gap-3 p-3 bg-white hover:bg-slate-50 transition-all text-left"
                                                     onClick={() => toggleMatch(idx)}
