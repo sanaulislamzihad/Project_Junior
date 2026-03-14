@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
     ChevronRight, FileText, RotateCcw, CheckCircle,
     BarChart2, Info, Hash, Clock, Layers,
@@ -59,8 +59,49 @@ function MiniBar({ value, color }) {
 const ReportView = ({ data, pdfFile, onReset }) => {
     const [expandedMatchIdx, setExpandedMatchIdx] = useState(null);
     const [activePanel, setActivePanel] = useState('matches');
+    const [inlinePreviewUrl, setInlinePreviewUrl] = useState(null);
+    const [previewLoadError, setPreviewLoadError] = useState('');
     const pdfSource = data.highlighted_pdf_url || pdfFile;
     const isHighlightedPdf = Boolean(data.highlighted_pdf_url);
+
+    useEffect(() => {
+        let objectUrl = null;
+        let cancelled = false;
+
+        const loadPreview = async () => {
+            if (!isHighlightedPdf || typeof pdfSource !== 'string') {
+                setInlinePreviewUrl(null);
+                setPreviewLoadError('');
+                return;
+            }
+            try {
+                setPreviewLoadError('');
+                const response = await fetch(pdfSource);
+                if (!response.ok) {
+                    throw new Error(`Preview request failed: ${response.status}`);
+                }
+                const blob = await response.blob();
+                if (cancelled) return;
+                objectUrl = URL.createObjectURL(blob);
+                setInlinePreviewUrl(`${objectUrl}#toolbar=1&navpanes=0&view=FitH`);
+            } catch (error) {
+                if (!cancelled) {
+                    console.error('Highlighted PDF preview failed:', error);
+                    setInlinePreviewUrl(null);
+                    setPreviewLoadError('Preview could not be loaded here. Use the download button to open the highlighted PDF.');
+                }
+            }
+        };
+
+        loadPreview();
+
+        return () => {
+            cancelled = true;
+            if (objectUrl) {
+                URL.revokeObjectURL(objectUrl);
+            }
+        };
+    }, [isHighlightedPdf, pdfSource]);
 
     const overallPct = Math.round(data.overall_similarity ?? data.semantic_similarity ?? 0);
     const semanticPct = Math.round(data.semantic_similarity ?? 0);
@@ -183,9 +224,27 @@ const ReportView = ({ data, pdfFile, onReset }) => {
                         </div>
 
                         {/* PDF Viewer or extracted text fallback */}
-                        {pdfFile && (data.filename || '').toLowerCase().endsWith('.pdf') ? (
-                            <div className="flex-1 overflow-hidden" style={{ minHeight: 0 }}>
-                                <PdfViewer file={pdfFile} />
+                        {pdfSource && (data.filename || '').toLowerCase().endsWith('.pdf') ? (
+                            <div className="flex-1 overflow-hidden bg-slate-100" style={{ minHeight: 0 }}>
+                                {isHighlightedPdf ? (
+                                    inlinePreviewUrl ? (
+                                        <iframe
+                                            src={inlinePreviewUrl}
+                                            title={data.filename || 'Highlighted PDF'}
+                                            className="w-full h-full border-0 bg-white"
+                                        />
+                                    ) : (
+                                        <div className="w-full h-full flex items-center justify-center bg-white text-center px-6">
+                                            <div>
+                                                <p className="text-sm font-medium text-slate-500">
+                                                    {previewLoadError || 'Loading highlighted PDF preview...'}
+                                                </p>
+                                            </div>
+                                        </div>
+                                    )
+                                ) : (
+                                    <PdfViewer file={pdfSource} showTextLayer />
+                                )}
                             </div>
                         ) : (
                             <div

@@ -124,7 +124,11 @@ def get_artifact(artifact_name: str):
     artifact_path = os.path.join(ARTIFACTS_DIR, safe_name)
     if not os.path.isfile(artifact_path):
         raise HTTPException(status_code=404, detail="Artifact not found.")
-    return FileResponse(artifact_path, media_type="application/pdf", filename=safe_name)
+    return FileResponse(
+        artifact_path,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{safe_name}"'},
+    )
 
 
 @app.get("/documents/stats")
