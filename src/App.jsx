@@ -31,8 +31,10 @@ function MainApp() {
   const [uploadedFile, setUploadedFile] = useState(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [addRepoAnalyzing, setAddRepoAnalyzing] = useState(false);
+  const [addRepoJobId, setAddRepoJobId] = useState(null);
   const [pastDocsRefresh, setPastDocsRefresh] = useState(0);
   const [checkAnalyzing, setCheckAnalyzing] = useState(false);
+  const [checkJobId, setCheckJobId] = useState(null);
   const [diffData, setDiffData] = useState(null);
   // Compare against: array of selected repositories ['university', 'personal']
   const [compareAgainst, setCompareAgainst] = useState(user?.role === 'teacher' ? ['personal'] : ['university']);
@@ -89,8 +91,9 @@ function MainApp() {
     }
   }, [stateHydrated, storageKey, appMode, compareAgainst, analysisResult, diffData]);
 
-  // Add to repository: save to DB, show ReportView
+  // Add to repository: kick off SSE job, show ReportView on complete
   const handleFileUpload = async (file) => {
+    setUploadedFile(file);
     setAddRepoAnalyzing(true);
     const formData = new FormData();
     formData.append('file', file);
@@ -104,28 +107,32 @@ function MainApp() {
       const response = await axios.post('http://localhost:8000/analyze', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
-      setUploadedFile(file);
-      setAnalysisResult(response.data);
-      setPastDocsRefresh((n) => n + 1);
+      setAddRepoJobId(response.data.job_id);
     } catch (error) {
       console.error("Error adding document:", error);
       const msg = error.response?.data?.detail || error.message || "Backend not reachable.";
-      const hint = error.code === "ERR_NETWORK" ? " Start backend: cd week2/backend then python main.py" : "";
+      const hint = error.code === "ERR_NETWORK" ? " Is the backend running? cd backend && python main.py" : "";
       alert("Failed to add document. " + msg + hint);
-    } finally {
       setAddRepoAnalyzing(false);
     }
   };
 
-  // Check document: disabled for now, will work when compare function is added
+  const handleAddRepoComplete = (result) => {
+    setAnalysisResult(result);
+    setPastDocsRefresh((n) => n + 1);
+    setAddRepoAnalyzing(false);
+    setAddRepoJobId(null);
+  };
+
+  // Check document: kick off SSE job, show ReportView on complete
   const handleCheckDocument = async (file) => {
     setProcessingFile(file);
+    setUploadedFile(file);
     setCheckAnalyzing(true);
     const formData = new FormData();
     formData.append('file', file);
     formData.append('filename_override', file.name || '');
 
-    // Determine repo_type based on selection
     let repoTypeValue = 'university';
     if (compareAgainst.includes('university') && compareAgainst.includes('personal')) {
       repoTypeValue = 'both';
@@ -133,7 +140,6 @@ function MainApp() {
       repoTypeValue = 'personal';
     }
     formData.append('repo_type', repoTypeValue);
-
     formData.append('role', user?.role || 'teacher');
     formData.append('add_to_repo', 'false');
     if (repoTypeValue !== 'university' && user?.id) formData.append('user_id', String(user.id));
@@ -141,17 +147,22 @@ function MainApp() {
       const response = await axios.post('http://localhost:8000/analyze', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
-      setUploadedFile(file);
-      setAnalysisResult(response.data);
+      setCheckJobId(response.data.job_id);
     } catch (error) {
       console.error("Error checking document:", error);
       const msg = error.response?.data?.detail || error.message || "Backend not reachable.";
-      const hint = error.code === "ERR_NETWORK" ? " Start backend: cd week2/backend then python main.py" : "";
+      const hint = error.code === "ERR_NETWORK" ? " Is the backend running? cd backend && python main.py" : "";
       alert("Failed to analyze document. " + msg + hint);
-    } finally {
       setCheckAnalyzing(false);
       setProcessingFile(null);
     }
+  };
+
+  const handleCheckComplete = (result) => {
+    setAnalysisResult(result);
+    setCheckAnalyzing(false);
+    setCheckJobId(null);
+    setProcessingFile(null);
   };
 
   const handleComparison = async (sourceFile, targetFile) => {
@@ -178,7 +189,10 @@ function MainApp() {
     setDiffData(null);
     setIsAnalyzing(false);
     setAddRepoAnalyzing(false);
+    setAddRepoJobId(null);
     setCheckAnalyzing(false);
+    setCheckJobId(null);
+    setProcessingFile(null);
   };
 
   const handleLogout = () => {
@@ -377,7 +391,7 @@ function MainApp() {
                             <label htmlFor="check-file-upload" className={`relative overflow-hidden group flex flex-col items-center justify-center h-72 w-full rounded-2xl border-2 border-dashed transition-all duration-300 ease-out cursor-pointer ${checkDragActive ? 'border-brand-500 bg-brand-50/50 scale-[1.01] shadow-inner' : 'border-slate-200 hover:border-brand-400 hover:bg-slate-50/30'}`}>
                               <AnimatePresence mode="wait">
                                 {checkAnalyzing ? (
-                                  <AnalyzingProgress file={processingFile} />
+                                  <AnalyzingProgress jobId={checkJobId} onComplete={handleCheckComplete} />
                                 ) : (
                                   <motion.div key="idle" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} className="flex flex-col items-center z-10">
                                     <div className={`p-6 rounded-3xl mb-4 transition-all duration-300 ${checkDragActive ? 'bg-brand-100 text-brand-600 scale-110 shadow-lg' : 'bg-slate-50 text-slate-400 group-hover:bg-white group-hover:text-brand-500 group-hover:shadow-xl group-hover:-translate-y-2'}`}>
@@ -424,7 +438,7 @@ function MainApp() {
                       </div>
                     </div>
                     <div className="p-6">
-                      <UploadZone onUpload={handleFileUpload} isAnalyzing={addRepoAnalyzing} user={user} showHero={false} title="Quick Upload" description="Drag & drop your files here" loadingLabel="Indexing..." loadingSubLabel="Adding to database" />
+                      <UploadZone onUpload={handleFileUpload} isAnalyzing={addRepoAnalyzing} jobId={addRepoJobId} onComplete={handleAddRepoComplete} user={user} showHero={false} title="Quick Upload" description="Drag & drop your files here" loadingLabel="Indexing..." loadingSubLabel="Adding to database" />
                     </div>
                   </motion.div>
                 </div>
