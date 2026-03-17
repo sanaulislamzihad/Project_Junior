@@ -56,7 +56,7 @@ function MiniBar({ value, color }) {
     );
 }
 
-const ReportView = ({ data, pdfFile, onReset }) => {
+const ReportView = ({ data, pdfFile, onReset, backLabel = "Back to Upload" }) => {
     const [expandedMatchIdx, setExpandedMatchIdx] = useState(null);
     const [activePanel, setActivePanel] = useState('matches');
     const matchCardRefs = useRef({});
@@ -162,10 +162,10 @@ const ReportView = ({ data, pdfFile, onReset }) => {
                 <div className="w-full px-6 lg:px-10 h-14 flex items-center gap-4">
                     <button
                         onClick={onReset}
-                        className="flex items-center gap-2 px-4 py-2 text-sm font-semibold text-slate-600 bg-slate-100 hover:bg-brand-50 hover:text-brand-600 rounded-lg border border-slate-200 hover:border-brand-200 transition-all shadow-sm"
+                        className="flex items-center gap-2 px-4 py-2 text-sm font-black text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl border border-emerald-500 transition-all shadow-lg shadow-emerald-100 hover:-translate-x-1"
                     >
-                        <ArrowLeft size={15} />
-                        Back to Upload
+                        <ArrowLeft size={16} strokeWidth={3} />
+                        {backLabel}
                     </button>
 
                     <div className="h-6 w-px bg-slate-200" />
