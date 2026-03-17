@@ -7,6 +7,15 @@ import { ChevronLeft, ChevronRight, ZoomIn, ZoomOut, RotateCcw } from 'lucide-re
 // Set PDF.js worker from CDN (matches installed version)
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.mjs`;
 
+function hexToRgba(hex, alpha) {
+    const value = (hex || '').replace('#', '');
+    if (value.length !== 6) return `rgba(253, 224, 71, ${alpha})`;
+    const r = Number.parseInt(value.slice(0, 2), 16);
+    const g = Number.parseInt(value.slice(2, 4), 16);
+    const b = Number.parseInt(value.slice(4, 6), 16);
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+}
+
 const PdfViewer = ({ file, showTextLayer = false, interactiveHighlights = [], onHighlightClick = null }) => {
     const [numPages, setNumPages] = useState(null);
     const [pageNumber, setPageNumber] = useState(1);
@@ -124,6 +133,7 @@ const PdfViewer = ({ file, showTextLayer = false, interactiveHighlights = [], on
                                             : (highlight.bbox ? [highlight.bbox] : []);
                                         return regions.map((region, regionIdx) => {
                                             const [x0, y0, x1, y1] = region || [0, 0, 0, 0];
+                                            const color = highlight.source_color?.bg || '#fde047';
                                             return (
                                                 <button
                                                     key={`${highlight.page_number}-${idx}-${regionIdx}-${highlight.query_sentence || ''}`}
@@ -136,8 +146,8 @@ const PdfViewer = ({ file, showTextLayer = false, interactiveHighlights = [], on
                                                         top: y0 * scale,
                                                         width: Math.max((x1 - x0) * scale, 6),
                                                         height: Math.max((y1 - y0) * scale, 6),
-                                                        backgroundColor: 'rgba(253, 224, 71, 0.35)',
-                                                        boxShadow: 'inset 0 0 0 1px rgba(234, 179, 8, 0.22)',
+                                                        backgroundColor: hexToRgba(color, 0.35),
+                                                        boxShadow: `inset 0 0 0 1px ${hexToRgba(color, 0.55)}`,
                                                         zIndex: 20,
                                                         padding: 0,
                                                     }}
