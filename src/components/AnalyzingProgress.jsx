@@ -1,41 +1,117 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
+import axios from 'axios';
 
-const AnalyzingProgress = ({ file, title = "Analyzing Document...", subtitle = "Checking for AI & Plagiarism matches" }) => {
+const AnalyzingProgress = ({ jobId, onComplete, title = "Analyzing Document...", subtitle = "Checking for AI & Plagiarism matches" }) => {
     const [progress, setProgress] = useState(0);
-    const [timeLeft, setTimeLeft] = useState(0);
+    const [stage, setStage] = useState("Starting\u2026");
+    const [error, setError] = useState(null);
+    const [eta, setEta] = useState(null);
+    const [startTime, setStartTime] = useState(null);
+    const esRef = useRef(null);
+    const doneRef = useRef(false);
 
     useEffect(() => {
-        // Estimate: base 5s + 3s per MB
-        const fileSizeMb = file ? file.size / (1024 * 1024) : 1;
-        const estimatedSeconds = Math.max(5, Math.ceil(5 + fileSizeMb * 3));
-        setTimeLeft(estimatedSeconds);
+        if (!jobId) return;
+        doneRef.current = false;
+        setStartTime(Date.now());
+        setEta("Estimating remaining time\u2026");
 
-        const totalMs = estimatedSeconds * 1000;
-        const intervalMs = 100; // Update every 100ms
-        const steps = totalMs / intervalMs;
-        // We only go up to 98% smoothly, backend response unmounts it
-        const increment = 98 / steps;
+        const es = new EventSource(`http://localhost:8000/analyze/stream/${jobId}`);
+        esRef.current = es;
 
-        const timer = setInterval(() => {
-            setProgress(p => {
-                if (p >= 98) return 98;
-                return p + increment;
-            });
-        }, intervalMs);
+        es.onmessage = async (event) => {
+            try {
+                const data = JSON.parse(event.data);
 
-        const secTimer = setInterval(() => {
-            setTimeLeft(prev => {
-                if (prev <= 1) return 1; // Stay at 1s if it takes longer
-                return prev - 1;
-            });
-        }, 1000);
+                if (data.error) {
+                    setError(data.error);
+                    es.close();
+                    return;
+                }
+
+                setProgress(data.progress ?? 0);
+                setStage(data.stage ?? "Processing\u2026");
+
+                if (data.progress === 100 && data.stage === "Done") {
+                    doneRef.current = true;
+                    es.close();
+                    // Fetch the stored result from the dedicated endpoint
+                    try {
+                        const res = await axios.get(`http://localhost:8000/analyze/result/${jobId}`);
+                        if (onComplete) onComplete(res.data);
+                    } catch (err) {
+                        setError("Failed to fetch result. " + (err.response?.data?.detail || err.message));
+                    }
+                }
+            } catch (parseErr) {
+                console.error("SSE parse error:", parseErr);
+            }
+        };
+
+        es.addEventListener("error", (event) => {
+            try {
+                const data = JSON.parse(event.data);
+                setError(data.error || "An error occurred during analysis.");
+            } catch {
+                if (!doneRef.current) {
+                    setError("Connection to the analysis stream was lost.");
+                }
+            }
+            es.close();
+        });
+
+        es.onerror = () => {
+            if (!doneRef.current) {
+                setError("Lost connection to the analysis stream. Please try again.");
+                es.close();
+            }
+        };
 
         return () => {
-            clearInterval(timer);
-            clearInterval(secTimer);
+            es.close();
         };
-    }, [file]);
+    }, [jobId]);
+
+    // Calculate ETA based on progress
+    useEffect(() => {
+        if (!startTime || progress === 0) return;
+
+        if (progress === 100) {
+            setEta("Wrapping up\u2026");
+            return;
+        }
+
+        const interval = setInterval(() => {
+            const elapsed = (Date.now() - startTime) / 1000;
+            const estimatedTotal = (elapsed / progress) * 100;
+            const remaining = Math.max(0, estimatedTotal - elapsed);
+            
+            if (remaining > 60) {
+                const m = Math.floor(remaining / 60);
+                const s = Math.round(remaining % 60);
+                setEta(`~${m}m ${s}s remaining`);
+            } else {
+                setEta(`~${Math.round(remaining)}s remaining`);
+            }
+        }, 1000);
+
+        return () => clearInterval(interval);
+    }, [progress, startTime]);
+
+    if (error) {
+        return (
+            <motion.div key="error" initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="flex flex-col items-center w-full max-w-sm px-6 text-center">
+                <div className="w-12 h-12 rounded-full bg-red-50 flex items-center justify-center mb-4">
+                    <svg className="w-6 h-6 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                </div>
+                <p className="font-bold text-red-600 text-sm">Analysis Failed</p>
+                <p className="text-xs text-slate-400 mt-1">{error}</p>
+            </motion.div>
+        );
+    }
 
     return (
         <motion.div key="analyzing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex flex-col items-center w-full max-w-sm px-6">
@@ -56,12 +132,19 @@ const AnalyzingProgress = ({ file, title = "Analyzing Document...", subtitle = "
                         className="h-full bg-gradient-to-r from-brand-400 to-teal-500 rounded-full"
                         initial={{ width: 0 }}
                         animate={{ width: `${progress}%` }}
-                        transition={{ ease: "linear", duration: 0.1 }}
+                        transition={{ ease: "easeOut", duration: 0.5 }}
                     />
                 </div>
-                <p className="text-xs font-semibold text-slate-400 text-center animate-pulse">
-                    Estimated wait: {timeLeft}s
-                </p>
+                <div className="flex justify-between items-center px-1">
+                    <p className="text-xs font-semibold text-brand-500 animate-pulse">
+                        {stage}
+                    </p>
+                    {eta && (
+                        <p className="text-xs font-medium text-slate-400">
+                            {eta}
+                        </p>
+                    )}
+                </div>
             </div>
         </motion.div>
     );

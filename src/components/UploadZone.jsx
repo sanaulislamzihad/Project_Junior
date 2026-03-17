@@ -3,7 +3,7 @@ import { Upload, FileText, AlertCircle, Check } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import AnalyzingProgress from './AnalyzingProgress';
 
-const UploadZone = ({ onUpload, isAnalyzing, user, showHero = true, title = 'Upload your Document', description = 'Drag & drop or browse files', loadingLabel = 'Analyzing Document...', loadingSubLabel = 'Cross-checking against repository...' }) => {
+const UploadZone = ({ onUpload, isAnalyzing, jobId, onComplete, user, showHero = true, title = 'Upload your Document', description = 'Drag & drop or browse files', loadingLabel = 'Analyzing Document...', loadingSubLabel = 'Cross-checking against repository...' }) => {
     const [dragActive, setDragActive] = useState(false);
     const [currentFile, setCurrentFile] = useState(null);
     const [error, setError] = useState(null);
@@ -125,7 +125,7 @@ const UploadZone = ({ onUpload, isAnalyzing, user, showHero = true, title = 'Upl
 
                             <AnimatePresence mode="wait">
                                 {isAnalyzing ? (
-                                    <AnalyzingProgress file={currentFile} title={loadingLabel} subtitle={loadingSubLabel} />
+                                    <AnalyzingProgress jobId={jobId} onComplete={onComplete} title={loadingLabel} subtitle={loadingSubLabel} />
                                 ) : (
                                     <motion.div
                                         key="idle"

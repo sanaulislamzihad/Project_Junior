@@ -1,11 +1,15 @@
+import asyncio
+import json
 import os
 import tempfile
 import uuid
 from datetime import datetime, timezone
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form
+
+from fastapi import BackgroundTasks, FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from sse_starlette.sse import EventSourceResponse
 
 # Import our modules
 from database import DatabaseManager
@@ -31,6 +35,12 @@ app.add_middleware(
 
 # Initialize Components
 db = DatabaseManager()
+
+# ==================== SSE JOB STORES ====================
+# Each job_id maps to its own asyncio.Queue.
+# Concurrent jobs NEVER share state — no clashing possible.
+jobs: dict = {}              # job_id -> asyncio.Queue
+analysis_results: dict = {}  # job_id -> final result dict
 
 # ==================== AUTH MODELS ====================
 
@@ -133,7 +143,7 @@ def get_artifact(artifact_name: str):
 
 @app.get("/documents/stats")
 def documents_stats():
-    """Check how many documents/chunks are saved in documents.db (same DB used for uploads)."""
+    """Check how many documents/chunks are saved in documents.db."""
     stats = get_stats()
     if stats is None:
         return {"error": "documents.db not found or no tables", "db_path": DB_PATH}
@@ -166,7 +176,7 @@ def documents_delete(document_id: str, repo_type: str = "university", owner_id: 
 
 @app.get("/documents/scan")
 def documents_scan(repo_type: str = "university", owner_id: int = None):
-    """Get chunks for similarity scan. repo_type: 'university' | 'personal' | 'both'. For personal/both, pass owner_id=teacher user id."""
+    """Get chunks for similarity scan."""
     if repo_type not in ("university", "personal", "both"):
         raise HTTPException(status_code=400, detail="repo_type must be 'university', 'personal', or 'both'.")
     if repo_type in ("personal", "both") and owner_id is None:
@@ -175,105 +185,134 @@ def documents_scan(repo_type: str = "university", owner_id: int = None):
     return {"repo_type": repo_type, "owner_id": owner_id, "chunk_count": len(chunks), "chunks": chunks}
 
 
-# ==================== DOCUMENT ANALYSIS (Text Processing Pipeline) ====================
+# ==================== DOCUMENT ANALYSIS (SSE + Background Task) ====================
 
 ALLOWED_EXTENSIONS = {".pdf", ".pptx"}
 
-@app.post("/analyze")
-async def analyze_document(
-    file: UploadFile = File(...),
-    repo_type: str = Form("university"),
-    user_id: str = Form(""),
-    role: str = Form("teacher"),
-    add_to_repo: str = Form("true"),
-    filename_override: str = Form(""),
-):
-    """Extract text from PDF/PPTX, clean, chunk. add_to_repo=true: save to DB; add_to_repo=false: check-only, no save."""
-    ext = os.path.splitext(file.filename or "")[1].lower()
-    if ext not in ALLOWED_EXTENSIONS:
-        raise HTTPException(status_code=400, detail="Only PDF and PPTX files are supported.")
-    repo_type = (repo_type or "university").lower()
-    if repo_type not in ("university", "personal", "both"):
-        raise HTTPException(status_code=400, detail="repo_type must be 'university', 'personal', or 'both'.")
-    will_save = add_to_repo.lower() in ("true", "1", "yes")
-    if will_save:
-        # Prevent saving to 'both' repository since it's only meant for checking
-        if repo_type == "both":
-            raise HTTPException(status_code=400, detail="Cannot save to 'both' repos at once. Choose one.")
-        if repo_type == "university" and role != "admin":
-            raise HTTPException(status_code=403, detail="Only admin can upload to Whole University repository.")
-        if repo_type == "personal":
-            if role != "teacher":
-                raise HTTPException(status_code=403, detail="Only teacher can upload to Personal repository.")
-            if not user_id or not user_id.strip():
-                raise HTTPException(status_code=400, detail="user_id required for personal repository.")
-    try:
-        owner_id_val = int(user_id.strip()) if repo_type in ("personal", "both") and user_id and user_id.strip() else None
-    except ValueError:
-        owner_id_val = None
-        if repo_type in ("personal", "both"):
-            raise HTTPException(status_code=400, detail="user_id must be a number.")
-    try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-            content = await file.read()
-            tmp.write(content)
-            tmp_path = tmp.name
-        try:
-            pdf_method = "pymupdf" if ext == ".pdf" else "pdfplumber"
-            chunks, meta, cleaned_text = process_document(
-                tmp_path,
-                pdf_method=pdf_method,
-                chunk_strategy="words",
-                max_chunk_size=250,
-                overlap=60,
-            )
-            original_filename = (filename_override and filename_override.strip()) or file.filename or meta.file_name
-            file_path_stored = f"uploaded/{original_filename}"
-            meta_dict = meta.to_dict()
-            if will_save:
-                embeddings_arr = encode_chunks(chunks)
-                embeddings_blobs = [arr.tobytes() for arr in embeddings_arr]
-                save_document(
-                    document_id=meta.document_id,
-                    file_name=original_filename,
-                    file_path=file_path_stored,
-                    num_chunks=meta.num_chunks,
-                    indexing_time=meta.indexing_time,
-                    file_type=meta.file_type,
-                    num_pages_or_slides=meta.num_pages_or_slides,
-                    raw_text_length=meta.raw_text_length,
-                    chunks=chunks,
-                    repo_type=repo_type,
-                    owner_id=owner_id_val,
-                    embeddings=embeddings_blobs,
-                )
-                meta_dict["indexed_at"] = datetime.now(timezone.utc).isoformat()
-            meta_dict["file_path"] = file_path_stored
-            meta_dict["repo_type"] = repo_type
-            meta_dict["owner_id"] = owner_id_val
 
-            semantic_similarity, lexical_similarity, fingerprint_similarity, overall_similarity, matches = 0.0, 0.0, 0.0, 0.0, []
-            top_similar_sentences = []
-            highlighted_pdf_url = None
-            highlight_summary = None
-            if not will_save and chunks:
-                repo_chunks = get_chunks_with_embeddings(repo_type=repo_type, owner_id=owner_id_val)
-                semantic_similarity, lexical_similarity, fingerprint_similarity, overall_similarity, matches = find_matches(
-                    chunks, repo_chunks, repo_type=repo_type, owner_id=owner_id_val
+async def _push(queue, progress: int, stage: str):
+    """Push a progress event then pause briefly so UX is visible."""
+    await queue.put({"progress": progress, "stage": stage})
+    await asyncio.sleep(0.8)
+
+
+async def _run_analysis(
+    job_id: str,
+    tmp_path: str,
+    ext: str,
+    will_save: bool,
+    repo_type: str,
+    owner_id_val,
+    original_filename: str,
+    file_path_stored: str,
+    role: str,
+):
+    """
+    Background task: runs the full analysis pipeline.
+    Every blocking call is wrapped in asyncio.to_thread() so concurrent
+    uploads never starve each other's SSE streams (no clashing).
+    """
+    queue = jobs.get(job_id)
+    if queue is None:
+        return
+
+    try:
+        # Stage 1 — Extract & chunk text
+        await _push(queue, 10, "Extracting text\u2026")
+        pdf_method = "pymupdf" if ext == ".pdf" else "pdfplumber"
+        chunks, meta, cleaned_text = await asyncio.to_thread(
+            process_document,
+            tmp_path,
+            pdf_method=pdf_method,
+            chunk_strategy="words",
+            max_chunk_size=250,
+            overlap=60,
+        )
+
+        await _push(queue, 25, "Chunking complete\u2026")
+
+        meta_dict = meta.to_dict()
+        meta_dict["file_path"] = file_path_stored
+        meta_dict["repo_type"] = repo_type
+        meta_dict["owner_id"] = owner_id_val
+
+        semantic_similarity = 0.0
+        lexical_similarity = 0.0
+        fingerprint_similarity = 0.0
+        overall_similarity = 0.0
+        matches = []
+        top_similar_sentences = []
+        highlighted_pdf_url = None
+        highlight_summary = None
+
+        if will_save:
+            # Stage 2 — Encode embeddings + save to repo
+            await _push(queue, 45, "Computing embeddings\u2026")
+            embeddings_arr = await asyncio.to_thread(encode_chunks, chunks)
+            embeddings_blobs = [arr.tobytes() for arr in embeddings_arr]
+
+            await _push(queue, 70, "Saving to repository\u2026")
+            await asyncio.to_thread(
+                save_document,
+                document_id=meta.document_id,
+                file_name=original_filename,
+                file_path=file_path_stored,
+                num_chunks=meta.num_chunks,
+                indexing_time=meta.indexing_time,
+                file_type=meta.file_type,
+                num_pages_or_slides=meta.num_pages_or_slides,
+                raw_text_length=meta.raw_text_length,
+                chunks=chunks,
+                repo_type=repo_type,
+                owner_id=owner_id_val,
+                embeddings=embeddings_blobs,
+            )
+            meta_dict["indexed_at"] = datetime.now(timezone.utc).isoformat()
+
+        elif chunks:
+            # Stage 2 — Similarity scan
+            await _push(queue, 45, "Computing embeddings\u2026")
+            repo_chunks = await asyncio.to_thread(
+                get_chunks_with_embeddings, repo_type=repo_type, owner_id=owner_id_val
+            )
+
+            await _push(queue, 60, "Scanning repository\u2026")
+            (
+                semantic_similarity,
+                lexical_similarity,
+                fingerprint_similarity,
+                overall_similarity,
+                matches,
+            ) = await asyncio.to_thread(
+                find_matches,
+                chunks,
+                repo_chunks,
+                repo_type=repo_type,
+                owner_id=owner_id_val,
+            )
+
+            await _push(queue, 75, "Ranking matches\u2026")
+            top_similar_sentences = await asyncio.to_thread(
+                extract_top_similar_sentences, matches
+            )
+
+            if ext == ".pdf":
+                await _push(queue, 85, "Generating highlights\u2026")
+                safe_base_name = "".join(
+                    ch if ch.isalnum() or ch in ("-", "_", ".") else "_"
+                    for ch in original_filename
                 )
-                top_similar_sentences = extract_top_similar_sentences(matches)
-                if ext == ".pdf":
-                    safe_base_name = "".join(ch if ch.isalnum() or ch in ("-", "_", ".") else "_" for ch in original_filename)
-                    artifact_name = f"{meta.document_id}_{uuid.uuid4().hex[:8]}_{safe_base_name}"
-                    artifact_path = os.path.join(ARTIFACTS_DIR, artifact_name)
-                    highlight_summary = highlight_pdf_matches(tmp_path, matches, artifact_path)
-                    highlighted_pdf_url = f"http://localhost:8000/artifacts/{artifact_name}"
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
-        return {
+                artifact_name = f"{meta.document_id}_{uuid.uuid4().hex[:8]}_{safe_base_name}"
+                artifact_path = os.path.join(ARTIFACTS_DIR, artifact_name)
+                highlight_summary = await asyncio.to_thread(
+                    highlight_pdf_matches, tmp_path, matches, artifact_path
+                )
+                highlighted_pdf_url = f"http://localhost:8000/artifacts/{artifact_name}"
+
+        # Stage final — Finalise
+        await _push(queue, 95, "Finalising report\u2026")
+
+        result = {
             "source_text": cleaned_text,
             "overall_similarity": overall_similarity,
             "semantic_similarity": semantic_similarity,
@@ -288,10 +327,134 @@ async def analyze_document(
             "chunk_count": meta.num_chunks,
             "metadata": {**meta_dict, "file_name": original_filename},
         }
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        analysis_results[job_id] = result
+
+        # Signal completion — frontend will fetch result via GET
+        await queue.put({"progress": 100, "stage": "Done"})
+
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to process file: {str(e)}")
+        await queue.put({"error": str(e)})
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+@app.post("/analyze")
+async def analyze_document(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    repo_type: str = Form("university"),
+    user_id: str = Form(""),
+    role: str = Form("teacher"),
+    add_to_repo: str = Form("true"),
+    filename_override: str = Form(""),
+):
+    """
+    Kick off an analysis job and return {job_id} immediately.
+    The client opens GET /analyze/stream/{job_id} for real-time progress,
+    then GET /analyze/result/{job_id} to retrieve the final report.
+    """
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="Only PDF and PPTX files are supported.")
+
+    repo_type = (repo_type or "university").lower()
+    if repo_type not in ("university", "personal", "both"):
+        raise HTTPException(status_code=400, detail="repo_type must be 'university', 'personal', or 'both'.")
+
+    will_save = add_to_repo.lower() in ("true", "1", "yes")
+    if will_save:
+        if repo_type == "both":
+            raise HTTPException(status_code=400, detail="Cannot save to 'both' repos at once. Choose one.")
+        if repo_type == "university" and role != "admin":
+            raise HTTPException(status_code=403, detail="Only admin can upload to Whole University repository.")
+        if repo_type == "personal":
+            if role != "teacher":
+                raise HTTPException(status_code=403, detail="Only teacher can upload to Personal repository.")
+            if not user_id or not user_id.strip():
+                raise HTTPException(status_code=400, detail="user_id required for personal repository.")
+
+    try:
+        owner_id_val = int(user_id.strip()) if repo_type in ("personal", "both") and user_id and user_id.strip() else None
+    except ValueError:
+        if repo_type in ("personal", "both"):
+            raise HTTPException(status_code=400, detail="user_id must be a number.")
+        owner_id_val = None
+
+    # Read the upload into a temp file NOW so the file handle stays valid in the background task
+    content = await file.read()
+    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+
+    original_filename = (filename_override and filename_override.strip()) or file.filename or ""
+    file_path_stored = f"uploaded/{original_filename}"
+
+    # Each upload gets its own isolated queue — concurrent jobs never clash
+    job_id = str(uuid.uuid4())
+    jobs[job_id] = asyncio.Queue()
+
+    background_tasks.add_task(
+        _run_analysis,
+        job_id=job_id,
+        tmp_path=tmp_path,
+        ext=ext,
+        will_save=will_save,
+        repo_type=repo_type,
+        owner_id_val=owner_id_val,
+        original_filename=original_filename,
+        file_path_stored=file_path_stored,
+        role=role,
+    )
+
+    return {"job_id": job_id}
+
+
+@app.get("/analyze/stream/{job_id}")
+async def analyze_stream(job_id: str):
+    """
+    SSE stream for a running analysis job.
+    Yields {progress, stage} JSON objects until done or error.
+    Each job has its OWN queue — concurrent uploads never interfere.
+    """
+    queue = jobs.get(job_id)
+    if queue is None:
+        raise HTTPException(status_code=404, detail="Job not found.")
+
+    async def event_generator():
+        while True:
+            try:
+                event = await asyncio.wait_for(queue.get(), timeout=120.0)
+            except asyncio.TimeoutError:
+                yield {"event": "error", "data": json.dumps({"error": "Job timed out."})}
+                break
+
+            if "error" in event:
+                yield {"event": "error", "data": json.dumps(event)}
+                break
+
+            yield {"data": json.dumps(event)}
+
+            if event.get("progress") == 100 and event.get("stage") == "Done":
+                break
+
+        # Cleanup job queue after streaming ends
+        jobs.pop(job_id, None)
+
+    return EventSourceResponse(event_generator())
+
+
+@app.get("/analyze/result/{job_id}")
+async def analyze_result(job_id: str):
+    """
+    Fetch the stored result for a completed job, then clean it up.
+    """
+    result = analysis_results.pop(job_id, None)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Result not found. Job may not be complete yet.")
+    return result
 
 
 if __name__ == "__main__":
