@@ -24,6 +24,17 @@ app = FastAPI(title="NSU PlagiChecker Auth")
 ARTIFACTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "artifacts")
 os.makedirs(ARTIFACTS_DIR, exist_ok=True)
 
+SOURCE_COLORS = [
+    {"bg": "#ef4444", "light": "#fef2f2", "border": "#fecaca", "text": "#dc2626"},
+    {"bg": "#3b82f6", "light": "#eff6ff", "border": "#bfdbfe", "text": "#2563eb"},
+    {"bg": "#a855f7", "light": "#faf5ff", "border": "#e9d5ff", "text": "#9333ea"},
+    {"bg": "#10b981", "light": "#ecfdf5", "border": "#a7f3d0", "text": "#059669"},
+    {"bg": "#f59e0b", "light": "#fffbeb", "border": "#fde68a", "text": "#d97706"},
+    {"bg": "#ec4899", "light": "#fdf2f8", "border": "#fbcfe8", "text": "#db2777"},
+    {"bg": "#6366f1", "light": "#eef2ff", "border": "#c7d2fe", "text": "#4f46e5"},
+    {"bg": "#14b8a6", "light": "#f0fdfa", "border": "#99f6e4", "text": "#0d9488"},
+]
+
 # CORS setup
 app.add_middleware(
     CORSMiddleware,
@@ -196,6 +207,28 @@ async def _push(queue, progress: int, stage: str):
     await asyncio.sleep(0.8)
 
 
+def _annotate_match_sources(matches):
+    """Assign a stable source group and color to matches from the same file."""
+    source_map = {}
+    for match in matches or []:
+        source_label = (
+            match.get("file_name")
+            or match.get("filename")
+            or match.get("matched_document_id")
+            or "Unknown source"
+        )
+        source_key = str(match.get("matched_document_id") or source_label)
+        if source_key not in source_map:
+            source_map[source_key] = {
+                "source_key": source_key,
+                "source_label": source_label,
+                "source_index": len(source_map),
+                "source_color": SOURCE_COLORS[len(source_map) % len(SOURCE_COLORS)],
+            }
+        match.update(source_map[source_key])
+    return matches
+
+
 async def _run_analysis(
     job_id: str,
     tmp_path: str,
@@ -290,6 +323,7 @@ async def _run_analysis(
                 repo_type=repo_type,
                 owner_id=owner_id_val,
             )
+            matches = _annotate_match_sources(matches)
 
             await _push(queue, 75, "Ranking matches\u2026")
             top_similar_sentences = await asyncio.to_thread(
