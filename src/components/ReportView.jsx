@@ -45,7 +45,7 @@ function RingGauge({ value, color, size = 80, stroke = 7 }) {
 function MiniBar({ value, color }) {
     return (
         <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">
-            <MotionDiv
+            <motion.div
                 className="h-full rounded-full"
                 style={{ backgroundColor: color }}
                 initial={{ width: 0 }}
@@ -56,25 +56,20 @@ function MiniBar({ value, color }) {
     );
 }
 
-function getSourceKey(match, idx) {
-    return match?.source_key || match?.matched_document_id || match?.file_name || match?.filename || `source-${idx}`;
-}
-
-function getSourceLabel(match, idx) {
-    return match?.source_label || match?.file_name || match?.filename || `Source ${idx + 1}`;
-}
-
-function getSourceColor(match, idx) {
-    return match?.source_color || COLORS[(match?.source_index ?? idx) % COLORS.length];
-}
-
-const MotionDiv = motion.div;
-
 const ReportView = ({ data, pdfFile, onReset }) => {
-    const [expandedSourceKey, setExpandedSourceKey] = useState(() => getSourceKey(data.matches?.[0], 0));
+    const [expandedMatchIdx, setExpandedMatchIdx] = useState(null);
     const [activePanel, setActivePanel] = useState('matches');
-    const sourceCardRefs = useRef({});
+    const matchCardRefs = useRef({});
     const pdfSource = pdfFile || data.highlighted_pdf_url || null;
+    const interactiveHighlights = data.highlight_summary?.located_sentences || [];
+
+    useEffect(() => {
+        if (activePanel !== 'matches' || expandedMatchIdx == null) return;
+        const node = matchCardRefs.current[expandedMatchIdx];
+        if (node?.scrollIntoView) {
+            node.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+    }, [activePanel, expandedMatchIdx]);
 
     const overallPct = Math.round(data.overall_similarity ?? data.semantic_similarity ?? 0);
     const semanticPct = Math.round(data.semantic_similarity ?? 0);
@@ -82,172 +77,87 @@ const ReportView = ({ data, pdfFile, onReset }) => {
     const fingerprintPct = Math.round(data.fingerprint_similarity ?? 0);
     const severity = getSeverity(overallPct);
     const SeverityIcon = severity.icon;
-    const gaugeColor = overallPct >= 60 ? '#ef4444' : overallPct >= 30 ? '#f59e0b' : '#10b981';
 
-    const sourceGroups = useMemo(() => {
-        const ordered = [];
-        const groupMap = new Map();
-
-        (data.matches || []).forEach((match, idx) => {
-            const sourceKey = getSourceKey(match, idx);
-            const color = getSourceColor(match, idx);
-            if (!groupMap.has(sourceKey)) {
-                const group = {
-                    sourceKey,
-                    sourceLabel: getSourceLabel(match, idx),
-                    color,
-                    matches: [],
-                    sentences: [],
-                    commonPortions: [],
-                    maxCombinedPct: 0,
-                };
-                groupMap.set(sourceKey, group);
-                ordered.push(group);
-            }
-
-            const group = groupMap.get(sourceKey);
-            const combinedPct = Math.round((match.combined_similarity ?? match.semantic_similarity ?? match.similarity ?? 0) * 100);
-            group.matches.push(match);
-            group.maxCombinedPct = Math.max(group.maxCombinedPct, combinedPct);
-
-            (match.common_portions || []).forEach((portion, portionIdx) => {
-                group.commonPortions.push({
-                    id: `${idx}-portion-${portionIdx}`,
-                    text: portion,
-                });
-            });
-
-            (match.similar_sentences || []).forEach((sentence, sentenceIdx) => {
-                group.sentences.push({
-                    ...sentence,
-                    id: `${idx}-${sentenceIdx}`,
-                    queryChunkIndex: match.query_chunk_index ?? idx,
-                    sentenceIndex: sentenceIdx,
-                });
-            });
-        });
-
-        ordered.forEach((group) => {
-            group.sentences.sort((a, b) => {
-                if (a.queryChunkIndex !== b.queryChunkIndex) {
-                    return a.queryChunkIndex - b.queryChunkIndex;
-                }
-                return a.sentenceIndex - b.sentenceIndex;
-            });
-        });
-
-        return ordered;
-    }, [data.matches]);
-
-    const sourceLookup = useMemo(() => {
-        const map = new Map();
-        sourceGroups.forEach((group) => {
-            map.set(group.sourceKey, group);
-            map.set(group.sourceLabel, group);
-        });
-        return map;
-    }, [sourceGroups]);
-
-    const interactiveHighlights = useMemo(() => (
-        (data.highlight_summary?.located_sentences || []).map((highlight) => {
-            const group = sourceLookup.get(highlight.source_key) || sourceLookup.get(highlight.matched_file_name);
-            return {
-                ...highlight,
-                source_color: highlight.source_color || group?.color,
-                source_key: highlight.source_key || group?.sourceKey,
-            };
-        })
-    ), [data.highlight_summary, sourceLookup]);
-
-    const hasLegacyCoverage = data.matches?.length > 0 && !(
+    const hasNewFormat = data.matches?.length > 0 && (
         typeof data.matches[0].semantic_similarity === 'number' ||
         typeof data.matches[0].similarity === 'number'
     );
 
     const textCoverage = useMemo(() => {
-        if (!data.source_text || !data.matches?.length || !hasLegacyCoverage) return [];
+        if (!data.source_text || !data.matches?.length || hasNewFormat) return [];
         const sorted = [...data.matches].sort((a, b) => (b.similarity_score ?? 0) - (a.similarity_score ?? 0));
         const coverage = new Array(data.source_text.length).fill(null);
         sorted.forEach((match, matchIdx) => {
-            (match.matched_segments || []).forEach((segment) => {
-                for (let i = segment.start; i < segment.end && i < coverage.length; i += 1) {
+            (match.matched_segments || []).forEach(seg => {
+                for (let i = seg.start; i < seg.end && i < coverage.length; i++) {
                     if (coverage[i] === null) coverage[i] = { matchIdx };
                 }
             });
         });
         return coverage;
-    }, [data.source_text, data.matches, hasLegacyCoverage]);
-
-    useEffect(() => {
-        if (activePanel !== 'matches' || !expandedSourceKey) return;
-        const node = sourceCardRefs.current[expandedSourceKey];
-        if (node?.scrollIntoView) {
-            node.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        }
-    }, [activePanel, expandedSourceKey]);
-
-    const toggleSource = (sourceKey) => {
-        setExpandedSourceKey((current) => (current === sourceKey ? null : sourceKey));
-    };
+    }, [data, hasNewFormat]);
 
     const renderContent = () => {
         if (!data.source_text) return null;
         const chunks = [];
-        let currentMatchIdx = -1;
-        let currentStart = 0;
-        const sourceText = data.source_text;
+        let curIdx = -1, curStart = 0;
+        const src = data.source_text;
 
         const pushChunk = (from, to, matchIdx) => {
-            const text = sourceText.slice(from, to);
+            const text = src.slice(from, to);
             if (!text) return;
-
-            const match = matchIdx >= 0 ? data.matches?.[matchIdx] : null;
-            const color = match ? getSourceColor(match, matchIdx) : null;
+            const col = COLORS[matchIdx % COLORS.length];
             chunks.push(
                 <span
                     key={from}
-                    style={match ? {
-                        backgroundColor: color.light,
-                        color: color.text,
+                    style={matchIdx === -1 ? {} : {
+                        backgroundColor: col.light,
+                        color: col.text,
                         fontWeight: 600,
-                        borderBottom: `2px solid ${color.bg}`,
+                        borderBottom: `2px solid ${col.bg}`,
                         borderRadius: '2px',
                         padding: '0 1px',
                         cursor: 'pointer',
-                    } : {}}
-                    title={match ? `Match: ${getSourceLabel(match, matchIdx)}` : ''}
-                    onClick={match ? () => setExpandedSourceKey(getSourceKey(match, matchIdx)) : undefined}
+                    }}
+                    title={matchIdx !== -1 ? `Match: ${data.matches[matchIdx]?.file_name || data.matches[matchIdx]?.filename || ''}` : ''}
+                    onClick={matchIdx !== -1 ? () => setExpandedMatchIdx(matchIdx) : undefined}
                 >
                     {text}
                 </span>
             );
         };
 
-        for (let i = 0; i < sourceText.length; i += 1) {
-            const nextMatchIdx = textCoverage[i] ? textCoverage[i].matchIdx : -1;
-            if (nextMatchIdx !== currentMatchIdx) {
-                pushChunk(currentStart, i, currentMatchIdx);
-                currentStart = i;
-                currentMatchIdx = nextMatchIdx;
-            }
+        for (let i = 0; i < src.length; i++) {
+            const next = textCoverage[i] ? textCoverage[i].matchIdx : -1;
+            if (next !== curIdx) { pushChunk(curStart, i, curIdx); curStart = i; curIdx = next; }
         }
-        pushChunk(currentStart, sourceText.length, currentMatchIdx);
+        pushChunk(curStart, src.length, curIdx);
         return chunks;
     };
 
+    const toggleMatch = (idx) => setExpandedMatchIdx(expandedMatchIdx === idx ? null : idx);
     const openMatchFromHighlight = (highlight) => {
         if (!highlight) return;
-        const sourceKey = highlight.source_key
-            || sourceLookup.get(highlight.matched_file_name)?.sourceKey
-            || null;
-        if (sourceKey) {
+        const directIndex = Number.isInteger(highlight.match_index) ? highlight.match_index : -1;
+        const targetIdx = directIndex >= 0 ? directIndex : (data.matches || []).findIndex((match) => {
+            const sameFile = (match.file_name || match.filename || '') === (highlight.matched_file_name || '');
+            if (!sameFile) return false;
+            return (match.similar_sentences || []).some((sentence) => (
+                sentence.query_sentence === highlight.query_sentence ||
+                sentence.matched_sentence === highlight.matched_sentence
+            ));
+        });
+        if (targetIdx >= 0) {
             setActivePanel('matches');
-            setExpandedSourceKey(sourceKey);
+            setExpandedMatchIdx(targetIdx);
         }
     };
+    const gaugeColor = overallPct >= 60 ? '#ef4444' : overallPct >= 30 ? '#f59e0b' : '#10b981';
 
     return (
         <div className="w-full" style={{ fontFamily: "'Inter', sans-serif" }}>
+
+            {/* ── Top Bar: Back button + doc info + severity ── */}
             <div className="w-full bg-white border-b border-slate-200 shadow-sm sticky top-0 z-30">
                 <div className="w-full px-6 lg:px-10 h-14 flex items-center gap-4">
                     <button
@@ -272,15 +182,19 @@ const ReportView = ({ data, pdfFile, onReset }) => {
                 </div>
             </div>
 
+            {/* ── Main Content: Document + Sidebar ── */}
             <div className="flex w-full" style={{ height: 'calc(100vh - 80px - 56px)' }}>
+
+                {/* Left: PDF Viewer or Extracted Text */}
                 <div className="flex-1 overflow-hidden bg-slate-100 flex flex-col" style={{ minHeight: 0 }}>
-                    <MotionDiv
+                    <motion.div
                         initial={{ opacity: 0, y: 14 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ delay: 0.1, duration: 0.4 }}
                         className="flex-1 flex flex-col m-4 lg:m-6 bg-white rounded-2xl shadow-lg border border-slate-200 overflow-hidden"
                         style={{ minHeight: 0 }}
                     >
+                        {/* macOS-style title bar */}
                         <div className="flex items-center gap-2 px-5 py-3 bg-slate-50 border-b border-slate-200 shrink-0">
                             <div className="w-3 h-3 rounded-full bg-red-400" />
                             <div className="w-3 h-3 rounded-full bg-amber-400" />
@@ -293,6 +207,7 @@ const ReportView = ({ data, pdfFile, onReset }) => {
                             </span>
                         </div>
 
+                        {/* PDF Viewer or extracted text fallback */}
                         {pdfSource && (data.filename || '').toLowerCase().endsWith('.pdf') ? (
                             <div className="flex-1 overflow-hidden bg-slate-100" style={{ minHeight: 0 }}>
                                 <PdfViewer
@@ -312,10 +227,13 @@ const ReportView = ({ data, pdfFile, onReset }) => {
                                 )}
                             </div>
                         )}
-                    </MotionDiv>
+                    </motion.div>
                 </div>
 
+                {/* Right Sidebar */}
                 <div className="w-[340px] lg:w-[360px] shrink-0 bg-white border-l border-slate-200 flex flex-col shadow-lg overflow-hidden">
+
+                    {/* Score header */}
                     <div className="px-5 pt-5 pb-4 border-b border-slate-100 shrink-0">
                         <h2 className="text-sm font-bold text-slate-900 tracking-tight mb-4">Analysis Report</h2>
 
@@ -361,40 +279,36 @@ const ReportView = ({ data, pdfFile, onReset }) => {
                         </div>
                     </div>
 
+                    {/* Tabs */}
                     <div className="flex border-b border-slate-100 shrink-0">
                         {[
                             { key: 'matches', label: 'Matches', icon: BarChart2 },
                             { key: 'meta', label: 'Metadata', icon: Info },
-                        ].map((tab) => {
-                            const TabIcon = tab.icon;
-                            return (
-                                <button
-                                    key={tab.key}
-                                    onClick={() => setActivePanel(tab.key)}
-                                    className={`flex-1 flex items-center justify-center gap-2 py-3 text-xs font-semibold transition-all border-b-2 ${activePanel === tab.key
+                        ].map(({ key, label, icon: Icon }) => (
+                            <button
+                                key={key}
+                                onClick={() => setActivePanel(key)}
+                                className={`flex-1 flex items-center justify-center gap-2 py-3 text-xs font-semibold transition-all border-b-2 ${activePanel === key
                                     ? 'border-brand-500 text-brand-600 bg-brand-50/60'
                                     : 'border-transparent text-slate-400 hover:text-slate-600 hover:bg-slate-50'
                                     }`}
-                                >
-                                    <TabIcon size={13} />
-                                    {tab.label}
-                                </button>
-                            );
-                        })}
+                            >
+                                <Icon size={13} />
+                                {label}
+                            </button>
+                        ))}
                     </div>
 
+                    {/* Scrollable tab content */}
                     <div className="flex-1 overflow-y-auto">
                         <AnimatePresence mode="wait">
                             {activePanel === 'matches' && (
-                                <MotionDiv
-                                    key="matches"
-                                    initial={{ opacity: 0, x: 6 }}
-                                    animate={{ opacity: 1, x: 0 }}
-                                    exit={{ opacity: 0, x: -6 }}
-                                    transition={{ duration: 0.15 }}
-                                    className="p-4 space-y-3"
+                                <motion.div key="matches"
+                                    initial={{ opacity: 0, x: 6 }} animate={{ opacity: 1, x: 0 }}
+                                    exit={{ opacity: 0, x: -6 }} transition={{ duration: 0.15 }}
+                                    className="p-4 space-y-2"
                                 >
-                                    {sourceGroups.length === 0 ? (
+                                    {data.matches.length === 0 ? (
                                         <div className="flex flex-col items-center justify-center py-16 text-center">
                                             <div className="w-14 h-14 rounded-full bg-emerald-50 border border-emerald-100 flex items-center justify-center mb-4">
                                                 <CheckCircle size={26} className="text-emerald-500" />
@@ -403,103 +317,80 @@ const ReportView = ({ data, pdfFile, onReset }) => {
                                             <p className="text-xs text-slate-400 mt-1">This document appears to be original.</p>
                                         </div>
                                     ) : (
-                                        sourceGroups.map((group, idx) => {
-                                            const isOpen = expandedSourceKey === group.sourceKey;
-                                            return (
-                                                <div
-                                                    key={group.sourceKey}
-                                                    ref={(node) => { sourceCardRefs.current[group.sourceKey] = node; }}
-                                                    className="rounded-xl border border-slate-200 overflow-hidden shadow-sm bg-white"
+                                        <>
+                                            {data.matches.map((match, idx) => {
+                                        const col = COLORS[idx % COLORS.length];
+                                        const semPct = Math.round((match.semantic_similarity ?? match.similarity ?? 0) * 100);
+                                        const lexPct = Math.round((match.lexical_similarity ?? 0) * 100);
+                                        const combinedPct = Math.round((match.combined_similarity ?? match.semantic_similarity ?? 0) * 100);
+                                        const sentenceMatches = Array.isArray(match.similar_sentences) ? match.similar_sentences : [];
+                                        const isOpen = expandedMatchIdx === idx;
+                                        return (
+                                            <div
+                                                key={idx}
+                                                ref={(node) => { matchCardRefs.current[idx] = node; }}
+                                                className="rounded-xl border border-slate-200 overflow-hidden shadow-sm"
+                                            >
+                                                <button
+                                                    className="w-full flex items-center gap-3 p-3 bg-white hover:bg-slate-50 transition-all text-left"
+                                                    onClick={() => toggleMatch(idx)}
                                                 >
-                                                    <button
-                                                        className="w-full flex items-center gap-3 p-3 hover:bg-slate-50 transition-all text-left"
-                                                        onClick={() => toggleSource(group.sourceKey)}
+                                                    <div
+                                                        className="w-8 h-8 rounded-lg flex items-center justify-center font-bold text-sm text-white shrink-0"
+                                                        style={{ backgroundColor: col.bg }}
                                                     >
-                                                        <div
-                                                            className="w-8 h-8 rounded-lg flex items-center justify-center font-bold text-sm text-white shrink-0"
-                                                            style={{ backgroundColor: group.color.bg }}
+                                                        {idx + 1}
+                                                    </div>
+                                                    <div className="flex-1 min-w-0">
+                                                        <div className="text-sm font-semibold text-slate-700 truncate">{match.file_name || match.filename}</div>
+                                                        <div className="mt-1.5"><MiniBar value={combinedPct} color={col.bg} /></div>
+                                                        <div className="flex gap-3 mt-1 text-[11px] text-slate-400">
+                                                            <span>Overall <span className="font-bold" style={{ color: col.text }}>{combinedPct}%</span></span>
+                                                            <span>Sem <span className="font-bold text-slate-500">{semPct}%</span></span>
+                                                            <span>Lex <span className="font-bold text-slate-500">{lexPct}%</span></span>
+                                                        </div>
+                                                        <div className="flex gap-3 mt-1 text-[10px] text-slate-400">
+                                                            <span>{sentenceMatches.length} sentence match</span>
+                                                        </div>
+                                                    </div>
+                                                    <ChevronRight size={14} className={`text-slate-300 transition-transform duration-200 shrink-0 ${isOpen ? 'rotate-90 text-brand-500' : ''}`} />
+                                                </button>
+                                                <AnimatePresence>
+                                                    {isOpen && (
+                                                        <motion.div
+                                                            initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }}
+                                                            exit={{ height: 0, opacity: 0 }} transition={{ duration: 0.2, ease: 'easeInOut' }}
+                                                            className="overflow-hidden"
                                                         >
-                                                            {idx + 1}
-                                                        </div>
-                                                        <div className="flex-1 min-w-0">
-                                                            <div className="text-sm font-semibold text-slate-700 truncate">{group.sourceLabel}</div>
-                                                            <div className="mt-1.5"><MiniBar value={group.maxCombinedPct} color={group.color.bg} /></div>
-                                                            <div className="flex gap-3 mt-1 text-[11px] text-slate-400">
-                                                                <span>{group.sentences.length} sentence match</span>
-                                                                <span>Top <span className="font-bold" style={{ color: group.color.text }}>{group.maxCombinedPct}%</span></span>
+                                                            <div className="px-3 pb-3 space-y-2 border-t border-slate-100 pt-2 bg-slate-50/60">
+                                                                {sentenceMatches.length > 0 && (
+                                                                    <div className="rounded-lg p-3 bg-white border border-slate-200 space-y-2">
+                                                                        <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-600 mb-1">Similar sentences</div>
+                                                                        {sentenceMatches.map((sm, sIdx) => (
+                                                                            <div key={sIdx} className="rounded-md border border-slate-200 p-2 bg-slate-50">
+                                                                                <p className="text-[11px] text-slate-700 leading-relaxed"><span className="font-semibold text-brand-600">Your:</span> "{sm.query_sentence}"</p>
+                                                                                <p className="text-[11px] text-slate-700 leading-relaxed mt-1"><span className="font-semibold" style={{ color: col.text }}>Repo:</span> "{sm.matched_sentence}"</p>
+                                                                                <p className="text-[10px] text-slate-500 mt-1">Sem {Math.round((sm.semantic_similarity ?? 0) * 100)}% • Lex {Math.round((sm.lexical_similarity ?? 0) * 100)}%</p>
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                )}
                                                             </div>
-                                                        </div>
-                                                        <ChevronRight size={14} className={`text-slate-300 transition-transform duration-200 shrink-0 ${isOpen ? 'rotate-90 text-brand-500' : ''}`} />
-                                                    </button>
-
-                                                    <AnimatePresence>
-                                                        {isOpen && (
-                                                            <MotionDiv
-                                                                initial={{ height: 0, opacity: 0 }}
-                                                                animate={{ height: 'auto', opacity: 1 }}
-                                                                exit={{ height: 0, opacity: 0 }}
-                                                                transition={{ duration: 0.2, ease: 'easeInOut' }}
-                                                                className="overflow-hidden"
-                                                            >
-                                                                <div
-                                                                    className="px-3 pb-3 pt-3 border-t space-y-2"
-                                                                    style={{ backgroundColor: group.color.light, borderColor: group.color.border }}
-                                                                >
-                                                                    {group.sentences.map((sentence, sentenceIdx) => (
-                                                                        <div key={sentence.id} className="rounded-lg border border-white/80 bg-white/80 p-3 shadow-sm">
-                                                                            <div className="flex items-center gap-2 mb-2">
-                                                                                <span
-                                                                                    className="inline-flex h-6 min-w-6 items-center justify-center rounded-full px-2 text-[10px] font-bold text-white"
-                                                                                    style={{ backgroundColor: group.color.bg }}
-                                                                                >
-                                                                                    {sentenceIdx + 1}
-                                                                                </span>
-                                                                                <span className="text-[10px] font-semibold uppercase tracking-wider" style={{ color: group.color.text }}>
-                                                                                    {group.sourceLabel}
-                                                                                </span>
-                                                                            </div>
-                                                                            <p className="text-[11px] text-slate-700 leading-relaxed">
-                                                                                <span className="font-semibold text-brand-600">Your:</span> "{sentence.query_sentence}"
-                                                                            </p>
-                                                                            <p className="text-[11px] text-slate-700 leading-relaxed mt-1">
-                                                                                <span className="font-semibold" style={{ color: group.color.text }}>Repo:</span> "{sentence.matched_sentence}"
-                                                                            </p>
-                                                                            <p className="text-[10px] text-slate-500 mt-2">
-                                                                                Sem {Math.round((sentence.semantic_similarity ?? 0) * 100)}% • Lex {Math.round((sentence.lexical_similarity ?? 0) * 100)}%
-                                                                            </p>
-                                                                        </div>
-                                                                    ))}
-
-                                                                    {group.sentences.length === 0 && group.commonPortions.length > 0 && (
-                                                                        <div className="rounded-lg border border-white/80 bg-white/80 p-3 shadow-sm">
-                                                                            <div className="text-[10px] font-semibold uppercase tracking-wider mb-2" style={{ color: group.color.text }}>
-                                                                                Exact overlap
-                                                                            </div>
-                                                                            {group.commonPortions.map((portion) => (
-                                                                                <p key={portion.id} className="text-[11px] text-slate-700 leading-relaxed">
-                                                                                    "{portion.text}"
-                                                                                </p>
-                                                                            ))}
-                                                                        </div>
-                                                                    )}
-                                                                </div>
-                                                            </MotionDiv>
-                                                        )}
-                                                    </AnimatePresence>
-                                                </div>
-                                            );
-                                        })
+                                                        </motion.div>
+                                                    )}
+                                                </AnimatePresence>
+                                            </div>
+                                        );
+                                    })}
+                                        </>
                                     )}
-                                </MotionDiv>
+                                </motion.div>
                             )}
 
                             {activePanel === 'meta' && data.metadata && (
-                                <MotionDiv
-                                    key="meta"
-                                    initial={{ opacity: 0, x: 6 }}
-                                    animate={{ opacity: 1, x: 0 }}
-                                    exit={{ opacity: 0, x: -6 }}
-                                    transition={{ duration: 0.15 }}
+                                <motion.div key="meta"
+                                    initial={{ opacity: 0, x: 6 }} animate={{ opacity: 1, x: 0 }}
+                                    exit={{ opacity: 0, x: -6 }} transition={{ duration: 0.15 }}
                                     className="p-4 space-y-2"
                                 >
                                     {[
@@ -508,25 +399,23 @@ const ReportView = ({ data, pdfFile, onReset }) => {
                                         { icon: Layers, label: 'Chunks', value: data.metadata.num_chunks },
                                         { icon: Clock, label: 'Indexed At', value: data.metadata.indexed_at ? new Date(data.metadata.indexed_at).toLocaleString() : '—', small: true },
                                         { icon: Clock, label: 'Indexing Duration', value: data.metadata.indexing_time != null ? `${data.metadata.indexing_time}s` : null },
-                                    ].filter((row) => row.value != null).map((row) => {
-                                        const MetaIcon = row.icon;
-                                        return (
-                                            <div key={row.label} className="flex items-start gap-3 p-3 rounded-xl bg-slate-50 border border-slate-200">
-                                                <div className="w-7 h-7 rounded-lg bg-brand-50 border border-brand-100 flex items-center justify-center shrink-0">
-                                                    <MetaIcon size={13} className="text-brand-500" />
-                                                </div>
-                                                <div className="min-w-0">
-                                                    <div className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">{row.label}</div>
-                                                    <div className={`text-slate-800 mt-0.5 truncate ${row.mono ? 'font-mono' : 'font-medium'} ${row.small ? 'text-xs' : 'text-sm'}`} title={String(row.value)}>{row.value}</div>
-                                                </div>
+                                    ].filter(r => r.value != null).map(({ icon: Icon, label, value, mono, small }) => (
+                                        <div key={label} className="flex items-start gap-3 p-3 rounded-xl bg-slate-50 border border-slate-200">
+                                            <div className="w-7 h-7 rounded-lg bg-brand-50 border border-brand-100 flex items-center justify-center shrink-0">
+                                                <Icon size={13} className="text-brand-500" />
                                             </div>
-                                        );
-                                    })}
-                                </MotionDiv>
+                                            <div className="min-w-0">
+                                                <div className="text-[10px] text-slate-400 uppercase tracking-wider font-semibold">{label}</div>
+                                                <div className={`text-slate-800 mt-0.5 truncate ${mono ? 'font-mono' : 'font-medium'} ${small ? 'text-xs' : 'text-sm'}`} title={String(value)}>{value}</div>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </motion.div>
                             )}
                         </AnimatePresence>
                     </div>
 
+                    {/* Sidebar footer */}
                     <div className="px-4 py-3 border-t border-slate-100 shrink-0 space-y-2">
                         {data.highlighted_pdf_url && (
                             <a
