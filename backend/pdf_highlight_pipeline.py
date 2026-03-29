@@ -33,6 +33,13 @@ def _normalize_word(text: str) -> str:
     return text.strip()
 
 
+def _hex_to_rgb_unit(hex_color: str) -> Tuple[float, float, float]:
+    value = (hex_color or "").lstrip("#")
+    if len(value) != 6:
+        return (1.0, 0.92, 0.25)
+    return tuple(int(value[i:i + 2], 16) / 255.0 for i in (0, 2, 4))
+
+
 def _split_sentences(text: str) -> List[str]:
     collapsed = re.sub(r"\s+", " ", text or "").strip()
     if not collapsed:
@@ -130,10 +137,14 @@ def locate_matched_sentences(pdf_sentences: List[Dict], matches: List[Dict]) -> 
 
                 if best is None:
                     continue
-                if best_lexical < 0.45 and best_ngram < 0.18 and best_sequence < 0.72:
+                if best_lexical < 0.3 and best_ngram < 0.12 and best_sequence < 0.58:
                     continue
 
-                key = (best["page_number"], best["normalized_text"])
+                key = (
+                    best["page_number"],
+                    best["normalized_text"],
+                    match.get("source_key") or match.get("matched_document_id") or match.get("file_name"),
+                )
                 if key in seen:
                     continue
                 seen.add(key)
@@ -147,6 +158,9 @@ def locate_matched_sentences(pdf_sentences: List[Dict], matches: List[Dict]) -> 
                         "query_sentence": target,
                         "matched_sentence": repo_sentence,
                         "matched_file_name": match.get("file_name"),
+                        "source_key": match.get("source_key"),
+                        "source_label": match.get("source_label"),
+                        "source_color": match.get("source_color"),
                         "semantic_similarity": sentence_match.get("semantic_similarity"),
                         "lexical_similarity": sentence_match.get("lexical_similarity"),
                         "ngram_similarity": round(float(best_ngram), 4),
@@ -310,7 +324,7 @@ def _find_best_word_window_rects(page: Any, sentence: str, clip: Any) -> List[An
                 best_score = score
                 best_words = window_words
 
-    if best_score < 0.6:
+    if best_score < 0.48:
         return []
     return _merge_word_rects(best_words)
 
@@ -364,7 +378,9 @@ def highlight_pdf_matches(input_pdf_path: str, matches: List[Dict], output_pdf_p
                 annot = page.add_highlight_annot(region)
                 if annot is None:
                     continue
-                annot.set_colors(stroke=(1.0, 0.92, 0.25))
+                annot.set_colors(
+                    stroke=_hex_to_rgb_unit((row.get("source_color") or {}).get("bg"))
+                )
                 annot.update(opacity=0.35)
                 annotation_count += 1
             highlight_count += 1

@@ -96,6 +96,11 @@ def _split_sentences(text: str) -> List[str]:
     return [p.strip() for p in parts if p and len(p.strip()) >= 20]
 
 
+def split_explainable_spans(text: str) -> List[str]:
+    # Public helper for smaller query spans when mixed-source pages are too broad for chunk matching.
+    return _split_sentences(text)
+
+
 def _extract_common_portions(text_a: str, text_b: str, min_chars: int = 18, top_n: int = 3) -> List[str]:
     # Return longest exact common text spans between two chunks.
     if not text_a or not text_b:
@@ -353,6 +358,24 @@ DEFAULT_MIN_FINGERPRINT = 0.08
 DEFAULT_SENTENCE_SEMANTIC = 0.58
 # Sentence-level lexical gate (relaxed for paraphrase pairs like vectors/embeddings).
 DEFAULT_SENTENCE_LEXICAL = 0.08
+# Keep more than one repository source when a query chunk matches multiple docs.
+DEFAULT_MAX_DOC_MATCHES_PER_CHUNK = 3
+
+
+def _select_document_matches(candidate_records: List[dict], limit: int = DEFAULT_MAX_DOC_MATCHES_PER_CHUNK) -> List[dict]:
+    # Keep the best explainable chunk per source document, then return the top documents.
+    best_by_document = {}
+    for record in candidate_records or []:
+        doc_id = str(record.get("matched_document_id") or "")
+        current = best_by_document.get(doc_id)
+        if current is None or float(record.get("combined_similarity") or 0.0) > float(current.get("combined_similarity") or 0.0):
+            best_by_document[doc_id] = record
+    ranked = sorted(
+        best_by_document.values(),
+        key=lambda item: float(item.get("combined_similarity") or 0.0),
+        reverse=True,
+    )
+    return ranked[: max(1, int(limit))]
 
 
 def find_matches(
@@ -406,12 +429,11 @@ def find_matches(
             total_overall = 0.0
             matched_count = 0
             for qi, row in enumerate(faiss_results):
-                # Evaluate all Top-K candidates, then keep the best explainable one.
+                # Evaluate all Top-K candidates, then keep the top distinct documents.
                 if not row:
                     continue
                 q_text = query_chunks[qi]
-                best_record = None
-                best_combined = -1.0
+                candidate_records = []
 
                 for chunk_info, sem_score in row:
                     sem_val = float(sem_score)
@@ -436,19 +458,18 @@ def find_matches(
                     )
                     if rec is None:
                         continue
-                    cmb = float(rec["combined_similarity"])
-                    if cmb > best_combined:
-                        best_combined = cmb
-                        best_record = rec
+                    candidate_records.append(rec)
 
-                if best_record is None:
+                top_records = _select_document_matches(candidate_records)
+                if not top_records:
                     continue
 
-                matches.append(best_record)
-                total_sem += best_record["semantic_similarity"]
-                total_lex += best_record["lexical_similarity"]
-                total_fp += best_record["fingerprint_similarity"]
-                total_overall += best_record["combined_similarity"]
+                matches.extend(top_records)
+                primary_record = top_records[0]
+                total_sem += float(primary_record.get("semantic_similarity") or 0.0)
+                total_lex += float(primary_record.get("lexical_similarity") or 0.0)
+                total_fp += float(primary_record.get("fingerprint_similarity") or 0.0)
+                total_overall += float(primary_record.get("combined_similarity") or 0.0)
                 matched_count += 1
             sem_overall = (total_sem / len(query_chunks)) * 100 if matched_count else 0.0
             lex_overall = (total_lex / len(query_chunks)) * 100 if matched_count else 0.0
@@ -465,12 +486,8 @@ def find_matches(
     total_overall = 0.0
     matched_count = 0
     for qi, q_emb in enumerate(query_embeddings):
-        best_sem = 0.0
-        best_lex = 0.0
-        best_fp = 0.0
-        best_overall = 0.0
-        best_match = None
         q_text = query_chunks[qi]
+        candidate_records = []
         for rc in repo_chunks:
             if "embedding" not in rc or rc["embedding"] is None:
                 continue
@@ -478,8 +495,7 @@ def find_matches(
             sem = cosine_similarity(q_emb, np.frombuffer(rc["embedding"], dtype=np.float32))
             lex = lexical_similarity(q_text, matched_text)
             fp = fingerprint_similarity(q_text, matched_text)
-            combined = (0.70 * sem) + (0.20 * lex) + (0.10 * fp)
-            if sem >= threshold and lex >= min_lexical and fp >= min_fingerprint and combined > best_overall:
+            if sem >= threshold and lex >= min_lexical and fp >= min_fingerprint:
                 rec = _build_match_record(
                     query_chunk_index=qi,
                     query_text=q_text,
@@ -493,17 +509,15 @@ def find_matches(
                 )
                 if rec is None:
                     continue
-                best_sem = sem
-                best_lex = lex
-                best_fp = fp
-                best_overall = combined
-                best_match = rec
-        if best_match:
-            matches.append(best_match)
-            total_sem += best_sem
-            total_lex += best_lex
-            total_fp += best_fp
-            total_overall += best_overall
+                candidate_records.append(rec)
+        top_records = _select_document_matches(candidate_records)
+        if top_records:
+            matches.extend(top_records)
+            primary_record = top_records[0]
+            total_sem += float(primary_record.get("semantic_similarity") or 0.0)
+            total_lex += float(primary_record.get("lexical_similarity") or 0.0)
+            total_fp += float(primary_record.get("fingerprint_similarity") or 0.0)
+            total_overall += float(primary_record.get("combined_similarity") or 0.0)
             matched_count += 1
     sem_overall = (total_sem / len(query_chunks)) * 100 if matched_count else 0.0
     lex_overall = (total_lex / len(query_chunks)) * 100 if matched_count else 0.0
