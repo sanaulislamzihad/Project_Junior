@@ -23,29 +23,33 @@ const UploadZone = ({ onUpload, isAnalyzing, jobId, onComplete, user, showHero =
         e.preventDefault();
         e.stopPropagation();
         setDragActive(false);
-        if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-            validateAndUpload(e.dataTransfer.files[0]);
+        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+            validateAndUpload(e.dataTransfer.files);
         }
     }, [onUpload]);
 
     const handleChange = (e) => {
         e.preventDefault();
-        if (e.target.files && e.target.files[0]) {
-            validateAndUpload(e.target.files[0]);
+        if (e.target.files && e.target.files.length > 0) {
+            validateAndUpload(e.target.files);
         }
     };
 
-    const validateAndUpload = (file) => {
-        const isPdf = file.name.toLowerCase().endsWith('.pdf');
-        const isPptx = file.name.toLowerCase().endsWith('.pptx');
+    const validateAndUpload = (files) => {
+        const validFiles = Array.from(files).filter(f => f.name.toLowerCase().endsWith('.pdf') || f.name.toLowerCase().endsWith('.pptx'));
 
-        if (!isPdf && !isPptx) {
-            setError("Please upload a PDF or PPTX file.");
+        if (validFiles.length === 0) {
+            setError("Please upload PDF or PPTX files.");
             return;
         }
         setError(null);
-        setCurrentFile(file);
-        onUpload(file);
+        setCurrentFile(validFiles[0]); // Keep for visual, though parent handles queue
+        
+        // Pass array if parent expects it, or pass single if parent expects it. 
+        // We will just pass the array for multiple support.
+        if (onUpload) {
+             onUpload(validFiles);
+        }
     };
 
     return (
@@ -103,6 +107,7 @@ const UploadZone = ({ onUpload, isAnalyzing, jobId, onComplete, user, showHero =
                         <input
                             type="file"
                             id="file-upload"
+                            multiple
                             style={{ display: 'none' }}
                             onChange={handleChange}
                             accept=".pdf,.pptx"
