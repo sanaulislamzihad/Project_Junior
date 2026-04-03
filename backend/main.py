@@ -16,6 +16,7 @@ from database import DatabaseManager
 from text_pipeline import process_document
 from document_store import save_document, list_documents, delete_document, get_stats, get_chunks_for_scan, get_chunks_with_embeddings, DB_PATH
 from embedding_pipeline import encode_chunks, find_matches, extract_top_similar_sentences
+from faiss_index import invalidate_cached_index
 from diff_checker import compute_diff
 from pdf_highlight_pipeline import highlight_pdf_matches
 from report_generator import generate_turnitin_report
@@ -241,6 +242,7 @@ def documents_delete(document_id: str, repo_type: str = "university", owner_id: 
     success = delete_document(document_id)
     if not success:
         raise HTTPException(status_code=500, detail="Failed to delete document.")
+    invalidate_cached_index(repo_type, owner_id)
     return {"success": True}
 
 
@@ -338,6 +340,7 @@ async def _run_analysis(
                 embeddings=embeddings_blobs,
             )
             meta_dict["indexed_at"] = datetime.now(timezone.utc).isoformat()
+            await asyncio.to_thread(invalidate_cached_index, repo_type, owner_id_val)
 
         elif chunks:
             # Stage 2 — Similarity scan

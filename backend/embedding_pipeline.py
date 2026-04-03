@@ -3,17 +3,20 @@
 # FAISS vector indexing is used when the repository is large for efficient similarity search.
 
 import hashlib
+import logging
 import os
-# For fixed model cache path so model is not re-downloaded on every backend restart.
 import re
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from difflib import SequenceMatcher
-# Used for tokenization (word extraction) in lexical similarity.
 from typing import List, Optional
-# List and Optional for type hints in function signatures.
-import numpy as np
-# For embedding arrays and cosine similarity computation.
 
-# Fixed cache folder inside project: model is saved here and reused on next backend run (no re-download).
+import numpy as np
+
+logger = logging.getLogger(__name__)
+
+MAX_CONCURRENT_WORKERS = min(4, os.cpu_count() or 4)
+
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_CACHE_DIR = os.path.join(_THIS_DIR, "model_cache")
 
@@ -342,6 +345,148 @@ DEFAULT_SENTENCE_SEMANTIC = 0.50
 DEFAULT_SENTENCE_LEXICAL = 0.05
 
 
+def _match_query_chunk_bruteforce(
+    qi: int,
+    q_emb: np.ndarray,
+    q_text: str,
+    repo_chunks: List[dict],
+    threshold: float,
+    min_lexical: float,
+    min_fingerprint: float,
+) -> dict:
+    """Score one query chunk against every repo chunk (brute-force path)."""
+    q_lower = q_text.lower()
+    best_per_doc = {}
+    for rc in repo_chunks:
+        if "embedding" not in rc or rc["embedding"] is None:
+            continue
+        doc_id = rc["document_id"]
+        matched_text = rc.get("chunk_text") or ""
+        sem = cosine_similarity(q_emb, np.frombuffer(rc["embedding"], dtype=np.float32))
+        lex = lexical_similarity(q_lower, matched_text.lower())
+        fp = fingerprint_similarity(q_lower, matched_text.lower())
+        combined = (0.70 * sem) + (0.20 * lex) + (0.10 * fp)
+        if sem >= threshold and lex >= min_lexical and fp >= min_fingerprint:
+            if combined > best_per_doc.get(doc_id, {}).get("combined", 0):
+                best_per_doc[doc_id] = {
+                    "combined": combined, "sem": sem, "lex": lex, "fp": fp,
+                    "rc": rc, "matched_text": matched_text,
+                }
+    if not best_per_doc:
+        return {"matches": [], "top": None}
+
+    top = max(best_per_doc.values(), key=lambda x: x["combined"])
+    matches = []
+    any_built = False
+    for doc_id, raw in best_per_doc.items():
+        rc = raw["rc"]
+        rec = _build_match_record(
+            query_chunk_index=qi,
+            query_text=q_text,
+            doc_id=rc["document_id"],
+            file_name=rc.get("file_name", rc["document_id"]),
+            matched_chunk_index=rc["chunk_index"],
+            matched_text=raw["matched_text"],
+            sem=raw["sem"], lex=raw["lex"], fp=raw["fp"],
+        )
+        if rec is not None:
+            matches.append(rec)
+            any_built = True
+    return {"matches": matches, "top": top if any_built else None}
+
+
+def _match_query_chunk_faiss(
+    qi: int,
+    q_text: str,
+    faiss_row: list,
+    threshold: float,
+    min_lexical: float,
+    min_fingerprint: float,
+) -> dict:
+    """Score one query chunk using pre-computed FAISS top-K candidates."""
+    if not faiss_row:
+        return {"matches": [], "top": None}
+
+    q_lower = q_text.lower()
+    best_per_doc = {}
+    for chunk_info, sem_score in faiss_row:
+        sem_val = float(sem_score)
+        if sem_val < threshold:
+            continue
+        doc_id = chunk_info["document_id"]
+        matched_text = chunk_info.get("chunk_text") or ""
+        lex_val = lexical_similarity(q_lower, matched_text.lower())
+        fp_val = fingerprint_similarity(q_lower, matched_text.lower())
+        if lex_val < min_lexical or fp_val < min_fingerprint:
+            continue
+        combined = (0.70 * sem_val) + (0.20 * lex_val) + (0.10 * fp_val)
+        if combined > best_per_doc.get(doc_id, {}).get("combined", -1.0):
+            best_per_doc[doc_id] = {
+                "combined": combined, "chunk_info": chunk_info,
+                "matched_text": matched_text,
+                "sem": sem_val, "lex": lex_val, "fp": fp_val,
+            }
+
+    if not best_per_doc:
+        return {"matches": [], "top": None}
+
+    top = max(best_per_doc.values(), key=lambda x: x["combined"])
+    matches = []
+    any_built = False
+    for doc_id, raw in best_per_doc.items():
+        ci = raw["chunk_info"]
+        rec = _build_match_record(
+            query_chunk_index=qi,
+            query_text=q_text,
+            doc_id=ci["document_id"],
+            file_name=ci.get("file_name", ci["document_id"]),
+            matched_chunk_index=ci["chunk_index"],
+            matched_text=raw["matched_text"],
+            sem=raw["sem"], lex=raw["lex"], fp=raw["fp"],
+        )
+        if rec is not None:
+            matches.append(rec)
+            any_built = True
+    return {"matches": matches, "top": top if any_built else None}
+
+
+def _aggregate_parallel_results(
+    results: List[dict],
+    n_query_chunks: int,
+) -> tuple:
+    """Merge per-chunk worker outputs into final similarity scores and match list."""
+    all_matches = []
+    total_sem = 0.0
+    total_lex = 0.0
+    total_fp = 0.0
+    matched_count = 0
+
+    for result in results:
+        all_matches.extend(result["matches"])
+        if result["top"] is not None:
+            top = result["top"]
+            total_sem += top["sem"]
+            total_lex += top["lex"]
+            total_fp += top["fp"]
+            matched_count += 1
+
+    coverage_pct = (matched_count / n_query_chunks) * 100 if n_query_chunks else 0.0
+    avg_sem = (total_sem / matched_count) if matched_count else 0.0
+    avg_lex = (total_lex / matched_count) if matched_count else 0.0
+    avg_fp = (total_fp / matched_count) if matched_count else 0.0
+    sem_overall = coverage_pct * avg_sem
+    lex_overall = coverage_pct * avg_lex
+    fp_overall = coverage_pct * avg_fp
+    combined_overall = coverage_pct * ((0.70 * avg_sem) + (0.20 * avg_lex) + (0.10 * avg_fp))
+    return (
+        round(sem_overall, 2),
+        round(lex_overall, 2),
+        round(fp_overall, 2),
+        round(combined_overall, 2),
+        all_matches,
+    )
+
+
 def find_matches(
     query_chunks: List[str],
     repo_chunks: List[dict],
@@ -350,165 +495,117 @@ def find_matches(
     owner_id: Optional[int] = None,
     min_lexical: float = None,
     min_fingerprint: float = None,
+    max_workers: int = None,
 ) -> tuple:
-    # Compare query chunks to repository; returns (sem_%, lex_%, fp_%, overall_%, matches).
+    """Compare query chunks to repository in parallel; returns (sem_%, lex_%, fp_%, overall_%, matches)."""
+    t_start = time.perf_counter()
+
     if threshold is None:
         threshold = DEFAULT_SEMANTIC_THRESHOLD
     if min_lexical is None:
         min_lexical = DEFAULT_MIN_LEXICAL
     if min_fingerprint is None:
         min_fingerprint = DEFAULT_MIN_FINGERPRINT
+    if max_workers is None:
+        max_workers = MAX_CONCURRENT_WORKERS
     if not query_chunks or not repo_chunks:
         return 0.0, 0.0, 0.0, 0.0, []
 
-    # Use only repo chunks whose embedding dimension matches current model (skip old model embeddings).
     dim = get_embedding_dim()
     repo_chunks = _filter_chunks_by_embedding_dim(repo_chunks, dim)
     if not repo_chunks:
         return 0.0, 0.0, 0.0, 0.0, []
 
-    # Decide whether to use FAISS: repo must have at least FAISS_MIN_CHUNKS and faiss_index must be available.
+    n_workers = min(max_workers, len(query_chunks))
+    logger.info(
+        "find_matches: %d query chunks x %d repo chunks (workers=%d)",
+        len(query_chunks), len(repo_chunks), n_workers,
+    )
+
     use_faiss = (
         faiss is not None
         and build_index_from_chunks is not None
         and search_faiss is not None
         and len(repo_chunks) >= FAISS_MIN_CHUNKS
     )
+
     if use_faiss:
-        # Try to load cached index from disk (avoids rebuilding from DB on every request).
-        index, chunk_infos = load_index_from_disk(repo_type, owner_id) if load_index_from_disk else (None, [])
+        index, chunk_infos = (
+            load_index_from_disk(repo_type, owner_id)
+            if load_index_from_disk else (None, [])
+        )
         if index is None or not chunk_infos:
-            # Build index in memory from current repo_chunks and optionally save to disk for next time.
             index, chunk_infos = build_index_from_chunks(repo_chunks)
             if index is not None and chunk_infos and save_index_to_disk and repo_type is not None:
                 save_index_to_disk(repo_type, owner_id, index, chunk_infos)
         if index is not None and chunk_infos:
-            # Encode query chunks once and run FAISS Top-K search for all of them.
+            t_enc = time.perf_counter()
             query_embeddings = encode_chunks(query_chunks)
+            logger.info("find_matches: query encoding %.3fs", time.perf_counter() - t_enc)
+
             faiss_results = search_faiss(index, chunk_infos, query_embeddings, k=DEFAULT_TOP_K)
-            matches = []
-            total_sem = 0.0
-            total_lex = 0.0
-            total_fp = 0.0
-            total_overall = 0.0
-            matched_count = 0
-            for qi, row in enumerate(faiss_results):
-                if not row:
-                    continue
-                q_text = query_chunks[qi]
-                best_per_doc = {}
 
-                for chunk_info, sem_score in row:
-                    sem_val = float(sem_score)
-                    if sem_val < threshold:
-                        continue
-                    doc_id = chunk_info["document_id"]
-                    matched_text = chunk_info.get("chunk_text") or ""
-                    lex_val = lexical_similarity(q_text.lower(), matched_text.lower())
-                    fp_val = fingerprint_similarity(q_text.lower(), matched_text.lower())
-                    if lex_val < min_lexical or fp_val < min_fingerprint:
-                        continue
-                    combined = (0.70 * sem_val) + (0.20 * lex_val) + (0.10 * fp_val)
-                    if combined > best_per_doc.get(doc_id, {}).get("combined", -1.0):
-                        best_per_doc[doc_id] = {
-                            "combined": combined, "chunk_info": chunk_info,
-                            "matched_text": matched_text,
-                            "sem": sem_val, "lex": lex_val, "fp": fp_val,
-                        }
+            t_par = time.perf_counter()
+            results: List[dict] = []
+            with ThreadPoolExecutor(max_workers=n_workers) as pool:
+                futures = {
+                    pool.submit(
+                        _match_query_chunk_faiss, qi, query_chunks[qi],
+                        faiss_results[qi], threshold, min_lexical, min_fingerprint,
+                    ): qi
+                    for qi in range(len(query_chunks))
+                }
+                for future in as_completed(futures):
+                    try:
+                        results.append(future.result())
+                    except Exception:
+                        logger.warning(
+                            "find_matches: chunk %d failed, skipping",
+                            futures[future], exc_info=True,
+                        )
 
-                if not best_per_doc:
-                    continue
-
-                any_built = False
-                top = max(best_per_doc.values(), key=lambda x: x["combined"])
-                for doc_id, raw in best_per_doc.items():
-                    ci = raw["chunk_info"]
-                    rec = _build_match_record(
-                        query_chunk_index=qi,
-                        query_text=q_text,
-                        doc_id=ci["document_id"],
-                        file_name=ci.get("file_name", ci["document_id"]),
-                        matched_chunk_index=ci["chunk_index"],
-                        matched_text=raw["matched_text"],
-                        sem=raw["sem"], lex=raw["lex"], fp=raw["fp"],
-                    )
-                    if rec is not None:
-                        matches.append(rec)
-                        any_built = True
-
-                if any_built:
-                    total_sem += top["sem"]
-                    total_lex += top["lex"]
-                    total_fp += top["fp"]
-                    total_overall += top["combined"]
-                    matched_count += 1
-            coverage_pct = (matched_count / len(query_chunks)) * 100 if query_chunks else 0.0
-            avg_sem = (total_sem / matched_count) if matched_count else 0.0
-            avg_lex = (total_lex / matched_count) if matched_count else 0.0
-            avg_fp  = (total_fp  / matched_count) if matched_count else 0.0
-            sem_overall      = coverage_pct * avg_sem
-            lex_overall      = coverage_pct * avg_lex
-            fp_overall       = coverage_pct * avg_fp
-            combined_overall = coverage_pct * ((0.70 * avg_sem) + (0.20 * avg_lex) + (0.10 * avg_fp))
-            return round(sem_overall, 2), round(lex_overall, 2), round(fp_overall, 2), round(combined_overall, 2), matches
-
-    # Brute-force path: compare each query chunk to every repo chunk (used when FAISS not available or repo small).
-    query_embeddings = encode_chunks(query_chunks)
-    matches = []
-    total_sem = 0.0
-    total_lex = 0.0
-    total_fp = 0.0
-    total_overall = 0.0
-    matched_count = 0
-    for qi, q_emb in enumerate(query_embeddings):
-        q_text = query_chunks[qi]
-        best_per_doc = {}
-        for rc in repo_chunks:
-            if "embedding" not in rc or rc["embedding"] is None:
-                continue
-            doc_id = rc["document_id"]
-            matched_text = rc.get("chunk_text") or ""
-            sem = cosine_similarity(q_emb, np.frombuffer(rc["embedding"], dtype=np.float32))
-            lex = lexical_similarity(q_text.lower(), matched_text.lower())
-            fp = fingerprint_similarity(q_text.lower(), matched_text.lower())
-            combined = (0.70 * sem) + (0.20 * lex) + (0.10 * fp)
-            if sem >= threshold and lex >= min_lexical and fp >= min_fingerprint:
-                if combined > best_per_doc.get(doc_id, {}).get("combined", 0):
-                    best_per_doc[doc_id] = {
-                        "combined": combined, "sem": sem, "lex": lex, "fp": fp,
-                        "rc": rc, "matched_text": matched_text,
-                    }
-        if not best_per_doc:
-            continue
-        any_built = False
-        top = max(best_per_doc.values(), key=lambda x: x["combined"])
-        for doc_id, raw in best_per_doc.items():
-            rc = raw["rc"]
-            rec = _build_match_record(
-                query_chunk_index=qi,
-                query_text=q_text,
-                doc_id=rc["document_id"],
-                file_name=rc.get("file_name", rc["document_id"]),
-                matched_chunk_index=rc["chunk_index"],
-                matched_text=raw["matched_text"],
-                sem=raw["sem"], lex=raw["lex"], fp=raw["fp"],
+            logger.info(
+                "find_matches[faiss]: parallel matching %.3fs (%d workers)",
+                time.perf_counter() - t_par, n_workers,
             )
-            if rec is not None:
-                matches.append(rec)
-                any_built = True
-        if any_built:
-            total_sem += top["sem"]
-            total_lex += top["lex"]
-            total_fp += top["fp"]
-            total_overall += top["combined"]
-            matched_count += 1
-    coverage_pct = (matched_count / len(query_chunks)) * 100 if query_chunks else 0.0
-    avg_sem = (total_sem / matched_count) if matched_count else 0.0
-    avg_lex = (total_lex / matched_count) if matched_count else 0.0
-    avg_fp  = (total_fp  / matched_count) if matched_count else 0.0
-    # Overall = weighted blend of coverage * avg_similarity — reflects true plagiarism extent
-    sem_overall      = coverage_pct * avg_sem
-    lex_overall      = coverage_pct * avg_lex
-    fp_overall       = coverage_pct * avg_fp
-    combined_overall = coverage_pct * ((0.70 * avg_sem) + (0.20 * avg_lex) + (0.10 * avg_fp))
-    return round(sem_overall, 2), round(lex_overall, 2), round(fp_overall, 2), round(combined_overall, 2), matches
+            final = _aggregate_parallel_results(results, len(query_chunks))
+            logger.info(
+                "find_matches: completed in %.3fs — %d matches",
+                time.perf_counter() - t_start, len(final[4]),
+            )
+            return final
+
+    # Brute-force path: parallel comparison of each query chunk against every repo chunk.
+    t_enc = time.perf_counter()
+    query_embeddings = encode_chunks(query_chunks)
+    logger.info("find_matches: query encoding %.3fs", time.perf_counter() - t_enc)
+
+    t_par = time.perf_counter()
+    results: List[dict] = []
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        futures = {
+            pool.submit(
+                _match_query_chunk_bruteforce, qi, query_embeddings[qi],
+                query_chunks[qi], repo_chunks, threshold, min_lexical, min_fingerprint,
+            ): qi
+            for qi in range(len(query_chunks))
+        }
+        for future in as_completed(futures):
+            try:
+                results.append(future.result())
+            except Exception:
+                logger.warning(
+                    "find_matches: chunk %d failed, skipping",
+                    futures[future], exc_info=True,
+                )
+
+    logger.info(
+        "find_matches[brute-force]: parallel matching %.3fs (%d workers)",
+        time.perf_counter() - t_par, n_workers,
+    )
+    final = _aggregate_parallel_results(results, len(query_chunks))
+    logger.info(
+        "find_matches: completed in %.3fs — %d matches",
+        time.perf_counter() - t_start, len(final[4]),
+    )
+    return final
