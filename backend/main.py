@@ -301,6 +301,23 @@ async def _run_analysis(
             overlap=20,
         )
 
+        if meta.num_pages_or_slides > 250:
+            warning_msg = (
+                f"This document has {meta.num_pages_or_slides} pages which exceeds "
+                f"the 250-page limit. It cannot be added to the repository or scanned. "
+                f"Please upload a document with 250 pages or fewer."
+            )
+            await queue.put({"progress": 100, "stage": "Done", "warning": warning_msg})
+            analysis_results[job_id] = {
+                "warning": warning_msg,
+                "page_or_slide_count": meta.num_pages_or_slides,
+                "filename": original_filename,
+                "overall_similarity": 0.0,
+                "matches": [],
+                "top_similar_sentences": [],
+            }
+            return
+
         await _push(queue, 25, "Chunking complete\u2026")
 
         meta_dict = meta.to_dict()
@@ -320,7 +337,14 @@ async def _run_analysis(
         if will_save:
             # Stage 2 — Encode embeddings + save to repo
             await _push(queue, 45, "Computing embeddings\u2026")
-            embeddings_arr = await asyncio.to_thread(encode_chunks, chunks)
+            BATCH_SIZE = 64
+            embeddings_arr = []
+            for i in range(0, len(chunks), BATCH_SIZE):
+                batch = chunks[i:i + BATCH_SIZE]
+                batch_emb = await asyncio.to_thread(encode_chunks, batch)
+                embeddings_arr.extend(batch_emb)
+            import numpy as np
+            embeddings_arr = np.array(embeddings_arr)
             embeddings_blobs = [arr.tobytes() for arr in embeddings_arr]
 
             await _push(queue, 70, "Saving to repository\u2026")
@@ -501,7 +525,7 @@ async def analyze_stream(job_id: str):
     async def event_generator():
         while True:
             try:
-                event = await asyncio.wait_for(queue.get(), timeout=120.0)
+                event = await asyncio.wait_for(queue.get(), timeout=86400.0)
             except asyncio.TimeoutError:
                 yield {"event": "error", "data": json.dumps({"error": "Job timed out."})}
                 break
