@@ -204,32 +204,7 @@ const ReportView = ({ data, pdfFile, onReset }) => {
                         {severity.label}
                     </span>
 
-                    <div className="h-6 w-px bg-slate-200" />
-
-                    {/* Turnitin-style Download Report button in top bar */}
-                    <button
-                        onClick={downloadTurnitinReport}
-                        disabled={reportLoading}
-                        className="flex items-center gap-2 px-4 py-2 text-sm font-semibold rounded-lg border transition-all shadow-sm shrink-0"
-                        style={{
-                            background: reportLoading ? '#f8fafc' : 'linear-gradient(135deg, #c0392b 0%, #e53e3e 100%)',
-                            color: reportLoading ? '#94a3b8' : 'white',
-                            borderColor: reportLoading ? '#e2e8f0' : '#c0392b',
-                            cursor: reportLoading ? 'not-allowed' : 'pointer',
-                        }}
-                    >
-                        {reportLoading ? (
-                            <>
-                                <svg className="animate-spin" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><circle cx="12" cy="12" r="10" strokeOpacity="0.25"/><path d="M12 2a10 10 0 0 1 10 10" /></svg>
-                                Generating…
-                            </>
-                        ) : (
-                            <>
-                                <Download size={13} />
-                                Download Report
-                            </>
-                        )}
-                    </button>
+                    
                 </div>
             </div>
 
@@ -493,19 +468,6 @@ const ReportView = ({ data, pdfFile, onReset }) => {
                                 </>
                             )}
                         </button>
-
-                        {/* ── Highlighted PDF Download ── */}
-                        {data.highlighted_pdf_url && (
-                            <a
-                                href={data.highlighted_pdf_url}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="w-full flex items-center justify-center gap-2 py-2.5 bg-amber-50 hover:bg-amber-100 text-amber-700 text-sm font-semibold rounded-xl border border-amber-200 transition-all"
-                            >
-                                <Download size={14} />
-                                Download Highlighted PDF
-                            </a>
-                        )}
 
                         <button
                             onClick={onReset}

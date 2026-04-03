@@ -88,6 +88,29 @@ def fingerprint_similarity(text_a: str, text_b: str, n: int = 5) -> float:
     return inter / union if union > 0 else 0.0
 
 
+def winnowing_similarity(text_a: str, text_b: str, k: int = 5, w: int = 4) -> float:
+    """Winnowing algorithm similarity (Stanford MOSS). Jaccard over winnowed fingerprint sets."""
+    def _winnow(text: str) -> set:
+        compact = re.sub(r"\s+", "", text.lower())
+        if len(compact) < k:
+            return set()
+        hashes = [hash(compact[i:i + k]) for i in range(len(compact) - k + 1)]
+        if len(hashes) < w:
+            return set(hashes)
+        fingerprints = set()
+        for i in range(len(hashes) - w + 1):
+            fingerprints.add(min(hashes[i:i + w]))
+        return fingerprints
+
+    fp_a = _winnow(text_a)
+    fp_b = _winnow(text_b)
+    if not fp_a or not fp_b:
+        return 0.0
+    inter = len(fp_a & fp_b)
+    union = len(fp_a | fp_b)
+    return inter / union if union > 0 else 0.0
+
+
 def _split_sentences(text: str) -> List[str]:
     """
     Sentence splitter that works on BOTH original-case AND lowercased text.
@@ -170,7 +193,7 @@ def _sentence_level_matches(
             # Require at least minimum semantic to avoid pure keyword matches
             if sem < 0.35:
                 continue
-            score = (0.7 * sem) + (0.15 * lex) + (0.15 * fp)
+            score = (0.65 * sem) + (0.15 * lex) + (0.10 * fp) + (0.10 * winnowing_similarity(q_sentences[i].lower(), m_sentences[j].lower()))
             if best is None or score > best["score"]:
                 best = {
                     "query_sentence": q_sentences[i],
@@ -224,7 +247,8 @@ def _build_match_record(
             "fingerprint_similarity": round(float(fp), 4),
         }]
 
-    combined = (0.70 * sem) + (0.20 * lex) + (0.10 * fp)
+    winnow = winnowing_similarity(query_text, matched_text)
+    combined = (0.60 * sem) + (0.15 * lex) + (0.15 * winnow) + (0.10 * fp)
     return {
         "query_chunk_index": query_chunk_index,
         "query_text_preview": query_text[:200] + ("..." if len(query_text) > 200 else ""),
@@ -235,6 +259,7 @@ def _build_match_record(
         "semantic_similarity": round(float(sem), 4),
         "lexical_similarity": round(float(lex), 4),
         "fingerprint_similarity": round(float(fp), 4),
+        "winnowing_similarity": round(float(winnow), 4),
         "combined_similarity": round(float(combined), 4),
         "similar_sentences": sentence_matches,
         "common_portions": common_portions,
@@ -365,7 +390,8 @@ def _match_query_chunk_bruteforce(
         sem = cosine_similarity(q_emb, np.frombuffer(rc["embedding"], dtype=np.float32))
         lex = lexical_similarity(q_lower, matched_text.lower())
         fp = fingerprint_similarity(q_lower, matched_text.lower())
-        combined = (0.70 * sem) + (0.20 * lex) + (0.10 * fp)
+        winnow = winnowing_similarity(q_lower, matched_text.lower())
+        combined = (0.60 * sem) + (0.15 * lex) + (0.15 * winnow) + (0.10 * fp)
         if sem >= threshold and lex >= min_lexical and fp >= min_fingerprint:
             if combined > best_per_doc.get(doc_id, {}).get("combined", 0):
                 best_per_doc[doc_id] = {
@@ -419,7 +445,8 @@ def _match_query_chunk_faiss(
         fp_val = fingerprint_similarity(q_lower, matched_text.lower())
         if lex_val < min_lexical or fp_val < min_fingerprint:
             continue
-        combined = (0.70 * sem_val) + (0.20 * lex_val) + (0.10 * fp_val)
+        winnow_val = winnowing_similarity(q_lower, matched_text.lower())
+        combined = (0.60 * sem_val) + (0.15 * lex_val) + (0.15 * winnow_val) + (0.10 * fp_val)
         if combined > best_per_doc.get(doc_id, {}).get("combined", -1.0):
             best_per_doc[doc_id] = {
                 "combined": combined, "chunk_info": chunk_info,
@@ -459,6 +486,7 @@ def _aggregate_parallel_results(
     total_sem = 0.0
     total_lex = 0.0
     total_fp = 0.0
+    total_overall = 0.0
     matched_count = 0
 
     for result in results:
@@ -468,21 +496,29 @@ def _aggregate_parallel_results(
             total_sem += top["sem"]
             total_lex += top["lex"]
             total_fp += top["fp"]
+            total_overall += top["combined"]
             matched_count += 1
 
-    coverage_pct = (matched_count / n_query_chunks) * 100 if n_query_chunks else 0.0
-    avg_sem = (total_sem / matched_count) if matched_count else 0.0
-    avg_lex = (total_lex / matched_count) if matched_count else 0.0
-    avg_fp = (total_fp / matched_count) if matched_count else 0.0
-    sem_overall = coverage_pct * avg_sem
-    lex_overall = coverage_pct * avg_lex
-    fp_overall = coverage_pct * avg_fp
-    combined_overall = coverage_pct * ((0.70 * avg_sem) + (0.20 * avg_lex) + (0.10 * avg_fp))
+    # Match rate = what % of chunks had any match
+    match_rate = matched_count / n_query_chunks if n_query_chunks else 0.0
+
+    # Average quality of matched chunks only
+    avg_sem  = (total_sem / matched_count) if matched_count else 0.0
+    avg_lex  = (total_lex / matched_count) if matched_count else 0.0
+    avg_fp   = (total_fp / matched_count) if matched_count else 0.0
+    avg_comb = (total_overall / matched_count) if matched_count else 0.0
+
+    # Final score = match_rate * avg_quality * 100
+    sem_overall      = round(match_rate * avg_sem * 100, 2)
+    lex_overall      = round(match_rate * avg_lex * 100, 2)
+    fp_overall       = round(match_rate * avg_fp * 100, 2)
+    combined_overall = round(match_rate * avg_comb * 100, 2)
+
     return (
-        round(sem_overall, 2),
-        round(lex_overall, 2),
-        round(fp_overall, 2),
-        round(combined_overall, 2),
+        sem_overall,
+        lex_overall,
+        fp_overall,
+        combined_overall,
         all_matches,
     )
 

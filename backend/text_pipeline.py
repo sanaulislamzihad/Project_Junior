@@ -8,6 +8,7 @@ Usage:
 import os
 import re
 import time
+import unicodedata
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -183,6 +184,20 @@ def extract_text_from_file(
 # =============================================================================
 # FILE PROCESSING LAYER (A): Header/Footer, Duplicate, Lowercase, Stopwords
 # =============================================================================
+
+def fix_pdf_hyphenation(text: str) -> str:
+    """Rejoin words broken across lines by PDF extraction (e.g. 'algo-\\nrithm' → 'algorithm')."""
+    if not text:
+        return text or ""
+    return re.sub(r'(\w)-\n(\w)', r'\1\2', text)
+
+
+def normalize_unicode_text(text: str) -> str:
+    """Decompose Unicode ligatures (ﬁ, ﬀ, ﬃ, …) into standard ASCII via NFKC normalization."""
+    if not text:
+        return text or ""
+    return unicodedata.normalize("NFKC", text)
+
 
 def remove_duplicate_lines(text: str) -> str:
     """Remove consecutive duplicate lines (keeps one copy)."""
@@ -384,6 +399,8 @@ def apply_file_processing_layer(
     """
     if not full_text or not full_text.strip():
         return ""
+    full_text = fix_pdf_hyphenation(full_text)
+    full_text = normalize_unicode_text(full_text)
     t = remove_duplicate_lines(full_text)
     t = remove_header_footer_lines(t)
     t = remove_references_section(t)
