@@ -1,0 +1,13 @@
+fastapi
+uvicorn
+python-multipart
+scikit-learn
+pdfplumber
+PyMuPDF
+python-pptx
+sentence-transformers
+faiss-cpu
+numpy
+nltk
+reportlab
+bcrypt
