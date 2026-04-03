@@ -29,9 +29,13 @@ dist-ssr
 # Database files
 *.db
 
-# Backend: downloaded embedding model cache (do not re-download on restart)
-backend/model_cache
-backend/faiss_index_cache
+# Backend: downloaded embedding model cache (keep folder, ignore contents)
+backend/model_cache/*
+!backend/model_cache/.gitkeep
+
+# Backend: FAISS index cache (keep folder, ignore contents)
+backend/faiss_index_cache/*
+!backend/faiss_index_cache/.gitkeep
 
 # Python cache
 __pycache__/
@@ -39,8 +43,9 @@ backend/__pycache__/
 *.pyc
 *.pyo
 
-# Backend artifacts (generated reports/PDFs)
-backend/artifacts/
+# Backend artifacts / generated reports (keep folder, ignore contents)
+backend/artifacts/*
+!backend/artifacts/.gitkeep
 
 # Environment
 .env
