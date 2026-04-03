@@ -26,8 +26,9 @@ dist-ssr
 # Vite cache
 .vite/
 
-# Database files
-*.db
+# Database files (keep clean schema-only versions in repo)
+!auth.db
+!documents.db
 
 # Backend: downloaded embedding model cache (keep folder, ignore contents)
 backend/model_cache/*
