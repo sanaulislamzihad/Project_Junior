@@ -17,6 +17,26 @@ logger = logging.getLogger(__name__)
 
 MAX_CONCURRENT_WORKERS = min(4, os.cpu_count() or 4)
 
+# ---------------------------------------------------------------------------
+# GPU / device detection
+# ---------------------------------------------------------------------------
+def _detect_device() -> str:
+    """Auto-detect the best available compute device (cuda > mps > cpu)."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            logger.info("GPU detected: using CUDA (%s)", torch.cuda.get_device_name(0))
+            return "cuda"
+        if torch.backends.mps.is_available():
+            logger.info("GPU detected: using Apple MPS")
+            return "mps"
+    except Exception:
+        pass
+    logger.info("No GPU detected: using CPU")
+    return "cpu"
+
+DEVICE = _detect_device()
+
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_CACHE_DIR = os.path.join(_THIS_DIR, "model_cache")
 
@@ -319,11 +339,13 @@ DEFAULT_EMBEDDING_DIM = 768
 
 def _get_model():
     # Lazy-load the sentence transformer model on first use; use fixed cache so restart does not re-download.
+    # Model is moved to DEVICE (cuda/mps/cpu) automatically by SentenceTransformer.
     global _MODEL
     if _MODEL is None:
         from sentence_transformers import SentenceTransformer
         os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
-        _MODEL = SentenceTransformer(EMBEDDING_MODEL, cache_folder=MODEL_CACHE_DIR)
+        _MODEL = SentenceTransformer(EMBEDDING_MODEL, cache_folder=MODEL_CACHE_DIR, device=DEVICE)
+        logger.info("SentenceTransformer loaded on device: %s", DEVICE)
     return _MODEL
 
 
@@ -334,10 +356,17 @@ def get_embedding_dim() -> int:
 
 def encode_chunks(chunks: List[str]) -> np.ndarray:
     # Encode a list of text chunks to embedding vectors; returns array of shape (n_chunks, dim), float32.
+    # On GPU, a larger batch_size is used for throughput; CPU falls back to a conservative size.
     if not chunks:
         return np.array([]).reshape(0, DEFAULT_EMBEDDING_DIM)
     model = _get_model()
-    embeddings = model.encode(chunks, convert_to_numpy=True)
+    batch_size = 128 if DEVICE in ("cuda", "mps") else 32
+    embeddings = model.encode(
+        chunks,
+        convert_to_numpy=True,
+        batch_size=batch_size,
+        show_progress_bar=False,
+    )
     return np.asarray(embeddings, dtype=np.float32)
 
 

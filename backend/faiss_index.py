@@ -10,9 +10,15 @@ import numpy as np
 # Optional import: FAISS is used for fast nearest-neighbor search over vectors.
 try:
     import faiss
-    # faiss: library for efficient similarity search in large vector sets.
+    # Move index to GPU if CUDA is available (faiss-gpu must be installed).
+    try:
+        import torch as _torch
+        _GPU_AVAILABLE = _torch.cuda.is_available()
+    except Exception:
+        _GPU_AVAILABLE = False
 except ImportError:
     faiss = None
+    _GPU_AVAILABLE = False
     # If faiss-cpu is not installed, we fall back to brute-force in embedding_pipeline.
 
 # Resolve this file's directory so we can place cache next to backend.
@@ -66,7 +72,16 @@ def build_index_from_chunks(repo_chunks: list) -> tuple:
     faiss.normalize_L2(embeddings)
     d = embeddings.shape[1]
     # IndexFlatIP: exact inner-product search (no approximation); good for accuracy.
-    index = faiss.IndexFlatIP(d)
+    cpu_index = faiss.IndexFlatIP(d)
+    # Move index to GPU if available for faster search (requires faiss-gpu).
+    if _GPU_AVAILABLE:
+        try:
+            res = faiss.StandardGpuResources()
+            index = faiss.index_cpu_to_gpu(res, 0, cpu_index)
+        except Exception:
+            index = cpu_index
+    else:
+        index = cpu_index
     # Add all repository vectors to the index (one row per chunk).
     index.add(embeddings)
     # chunk_infos[i] maps index row i back to document_id, file_name, chunk_index, chunk_text.
@@ -119,7 +134,12 @@ def save_index_to_disk(repo_type: str, owner_id, index, chunk_infos: list):
     _ensure_index_dir()
     key = _index_key(repo_type, owner_id)
     index_path = os.path.join(INDEX_DIR, f"{key}.faiss")
-    faiss.write_index(index, index_path)
+    # GPU indexes cannot be written directly — convert to CPU first.
+    try:
+        save_index = faiss.index_gpu_to_cpu(index)
+    except Exception:
+        save_index = index
+    faiss.write_index(save_index, index_path)
     import pickle
     meta_path = os.path.join(INDEX_DIR, f"{key}.meta")
     with open(meta_path, "wb") as f:
@@ -138,6 +158,13 @@ def load_index_from_disk(repo_type: str, owner_id) -> tuple:
         return None, []
     try:
         index = faiss.read_index(index_path)
+        # Move to GPU if available for faster search.
+        if _GPU_AVAILABLE:
+            try:
+                res = faiss.StandardGpuResources()
+                index = faiss.index_cpu_to_gpu(res, 0, index)
+            except Exception:
+                pass  # Fall back to CPU index if GPU transfer fails
     except Exception:
         return None, []
     try:
