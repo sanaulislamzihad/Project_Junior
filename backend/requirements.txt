@@ -11,3 +11,4 @@ numpy
 nltk
 reportlab
 bcrypt
+sse-starlette
