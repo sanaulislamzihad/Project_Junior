@@ -410,7 +410,8 @@ def _match_query_chunk_bruteforce(
 ) -> dict:
     """Score one query chunk against every repo chunk (brute-force path)."""
     q_lower = q_text.lower()
-    best_per_doc = {}
+    # No hard cap per document — threshold filters naturally. All chunks that pass are reported.
+    matches_per_doc: dict = {}
     for rc in repo_chunks:
         if "embedding" not in rc or rc["embedding"] is None:
             continue
@@ -422,31 +423,32 @@ def _match_query_chunk_bruteforce(
         winnow = winnowing_similarity(q_lower, matched_text.lower())
         combined = (0.60 * sem) + (0.15 * lex) + (0.15 * winnow) + (0.10 * fp)
         if sem >= threshold and lex >= min_lexical and fp >= min_fingerprint:
-            if combined > best_per_doc.get(doc_id, {}).get("combined", 0):
-                best_per_doc[doc_id] = {
-                    "combined": combined, "sem": sem, "lex": lex, "fp": fp,
-                    "rc": rc, "matched_text": matched_text,
-                }
-    if not best_per_doc:
+            entry = {"combined": combined, "sem": sem, "lex": lex, "fp": fp,
+                     "rc": rc, "matched_text": matched_text}
+            matches_per_doc.setdefault(doc_id, []).append(entry)
+
+    if not matches_per_doc:
         return {"matches": [], "top": None}
 
-    top = max(best_per_doc.values(), key=lambda x: x["combined"])
+    all_entries = [e for bucket in matches_per_doc.values() for e in bucket]
+    top = max(all_entries, key=lambda x: x["combined"])
     matches = []
     any_built = False
-    for doc_id, raw in best_per_doc.items():
-        rc = raw["rc"]
-        rec = _build_match_record(
-            query_chunk_index=qi,
-            query_text=q_text,
-            doc_id=rc["document_id"],
-            file_name=rc.get("file_name", rc["document_id"]),
-            matched_chunk_index=rc["chunk_index"],
-            matched_text=raw["matched_text"],
-            sem=raw["sem"], lex=raw["lex"], fp=raw["fp"],
-        )
-        if rec is not None:
-            matches.append(rec)
-            any_built = True
+    for doc_id, bucket in matches_per_doc.items():
+        for raw in bucket:
+            rc = raw["rc"]
+            rec = _build_match_record(
+                query_chunk_index=qi,
+                query_text=q_text,
+                doc_id=rc["document_id"],
+                file_name=rc.get("file_name", rc["document_id"]),
+                matched_chunk_index=rc["chunk_index"],
+                matched_text=raw["matched_text"],
+                sem=raw["sem"], lex=raw["lex"], fp=raw["fp"],
+            )
+            if rec is not None:
+                matches.append(rec)
+                any_built = True
     return {"matches": matches, "top": top if any_built else None}
 
 
@@ -463,7 +465,8 @@ def _match_query_chunk_faiss(
         return {"matches": [], "top": None}
 
     q_lower = q_text.lower()
-    best_per_doc = {}
+    # No hard cap — threshold filters naturally.
+    matches_per_doc: dict = {}
     for chunk_info, sem_score in faiss_row:
         sem_val = float(sem_score)
         if sem_val < threshold:
@@ -476,33 +479,33 @@ def _match_query_chunk_faiss(
             continue
         winnow_val = winnowing_similarity(q_lower, matched_text.lower())
         combined = (0.60 * sem_val) + (0.15 * lex_val) + (0.15 * winnow_val) + (0.10 * fp_val)
-        if combined > best_per_doc.get(doc_id, {}).get("combined", -1.0):
-            best_per_doc[doc_id] = {
-                "combined": combined, "chunk_info": chunk_info,
-                "matched_text": matched_text,
-                "sem": sem_val, "lex": lex_val, "fp": fp_val,
-            }
+        entry = {"combined": combined, "chunk_info": chunk_info,
+                 "matched_text": matched_text,
+                 "sem": sem_val, "lex": lex_val, "fp": fp_val}
+        matches_per_doc.setdefault(doc_id, []).append(entry)
 
-    if not best_per_doc:
+    if not matches_per_doc:
         return {"matches": [], "top": None}
 
-    top = max(best_per_doc.values(), key=lambda x: x["combined"])
+    all_entries = [e for bucket in matches_per_doc.values() for e in bucket]
+    top = max(all_entries, key=lambda x: x["combined"])
     matches = []
     any_built = False
-    for doc_id, raw in best_per_doc.items():
-        ci = raw["chunk_info"]
-        rec = _build_match_record(
-            query_chunk_index=qi,
-            query_text=q_text,
-            doc_id=ci["document_id"],
-            file_name=ci.get("file_name", ci["document_id"]),
-            matched_chunk_index=ci["chunk_index"],
-            matched_text=raw["matched_text"],
-            sem=raw["sem"], lex=raw["lex"], fp=raw["fp"],
-        )
-        if rec is not None:
-            matches.append(rec)
-            any_built = True
+    for doc_id, bucket in matches_per_doc.items():
+        for raw in bucket:
+            ci = raw["chunk_info"]
+            rec = _build_match_record(
+                query_chunk_index=qi,
+                query_text=q_text,
+                doc_id=ci["document_id"],
+                file_name=ci.get("file_name", ci["document_id"]),
+                matched_chunk_index=ci["chunk_index"],
+                matched_text=raw["matched_text"],
+                sem=raw["sem"], lex=raw["lex"], fp=raw["fp"],
+            )
+            if rec is not None:
+                matches.append(rec)
+                any_built = True
     return {"matches": matches, "top": top if any_built else None}
 
 

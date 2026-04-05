@@ -28,7 +28,8 @@ INDEX_DIR = os.path.join(_THIS_DIR, "faiss_index_cache")
 # Use FAISS only when repo has at least this many chunks; below that brute-force can be faster.
 FAISS_MIN_CHUNKS = 20
 # Number of nearest neighbors to return per query chunk (Top-K).
-DEFAULT_TOP_K = 10
+# Set high enough so large documents (250-page PDFs) return all matching chunks.
+DEFAULT_TOP_K = 50
 
 
 def _index_key(repo_type: str, owner_id) -> str:
@@ -107,7 +108,8 @@ def search_faiss(index, chunk_infos: list, query_embeddings: np.ndarray, k: int 
         Q = Q.reshape(1, -1)
     # Normalize query vectors so inner product with DB vectors = cosine similarity.
     faiss.normalize_L2(Q)
-    k = min(k, index.ntotal)
+    # Always search all chunks so exact/high matches are never missed.
+    k = index.ntotal
     if k <= 0:
         return []
     # D = similarities (inner products), I = indices into chunk_infos.
