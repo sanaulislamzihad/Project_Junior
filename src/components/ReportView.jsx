@@ -107,25 +107,45 @@ const ReportView = ({ data, pdfFile, onReset }) => {
         typeof data.matches[0].similarity === 'number'
     );
 
-    const textCoverage = useMemo(() => {
-        if (!data.source_text || !data.matches?.length || hasNewFormat) return [];
+    /** Per-character match index for painting highlights (-1 = none). Supports API text_highlights (PPTX / direct text / new grouped matches). */
+    const highlightCharCoverage = useMemo(() => {
+        if (!data.source_text) return null;
+        const src = data.source_text;
+        if (data.text_highlights?.length) {
+            const cov = new Array(src.length).fill(-1);
+            const sorted = [...data.text_highlights].sort((a, b) => (b.end - b.start) - (a.end - a.start));
+            sorted.forEach(({ start, end, match_index }) => {
+                const s = Math.max(0, start);
+                const e = Math.min(src.length, end);
+                for (let i = s; i < e; i++) {
+                    if (cov[i] < 0) cov[i] = match_index;
+                }
+            });
+            return cov;
+        }
+        if (!data.matches?.length || hasNewFormat) return null;
         const sorted = [...data.matches].sort((a, b) => (b.similarity_score ?? 0) - (a.similarity_score ?? 0));
-        const coverage = new Array(data.source_text.length).fill(null);
+        const coverage = new Array(src.length).fill(-1);
         sorted.forEach((match, matchIdx) => {
             (match.matched_segments || []).forEach(seg => {
                 for (let i = seg.start; i < seg.end && i < coverage.length; i++) {
-                    if (coverage[i] === null) coverage[i] = { matchIdx };
+                    if (coverage[i] < 0) coverage[i] = matchIdx;
                 }
             });
         });
         return coverage;
-    }, [data, hasNewFormat]);
+    }, [data.source_text, data.text_highlights, data.matches, hasNewFormat]);
 
     const renderContent = () => {
         if (!data.source_text) return null;
-        const chunks = [];
-        let curIdx = -1, curStart = 0;
         const src = data.source_text;
+        const hasPaint = highlightCharCoverage && highlightCharCoverage.some((v) => v >= 0);
+        if (!hasPaint) {
+            return src;
+        }
+        const chunks = [];
+        let curIdx = -1;
+        let curStart = 0;
 
         const pushChunk = (from, to, matchIdx) => {
             const text = src.slice(from, to);
@@ -133,7 +153,7 @@ const ReportView = ({ data, pdfFile, onReset }) => {
             const col = COLORS[matchIdx % COLORS.length];
             chunks.push(
                 <span
-                    key={from}
+                    key={`${from}-${to}`}
                     style={matchIdx === -1 ? {} : {
                         backgroundColor: col.light,
                         color: col.text,
@@ -152,8 +172,12 @@ const ReportView = ({ data, pdfFile, onReset }) => {
         };
 
         for (let i = 0; i < src.length; i++) {
-            const next = textCoverage[i] ? textCoverage[i].matchIdx : -1;
-            if (next !== curIdx) { pushChunk(curStart, i, curIdx); curStart = i; curIdx = next; }
+            const next = highlightCharCoverage[i] >= 0 ? highlightCharCoverage[i] : -1;
+            if (next !== curIdx) {
+                pushChunk(curStart, i, curIdx);
+                curStart = i;
+                curIdx = next;
+            }
         }
         pushChunk(curStart, src.length, curIdx);
         return chunks;
@@ -246,7 +270,7 @@ const ReportView = ({ data, pdfFile, onReset }) => {
                         ) : (
                             <div
                                 className="flex-1 overflow-y-auto px-10 sm:px-14 py-10 sm:py-12 text-base sm:text-[17px] leading-[1.95] text-slate-800 whitespace-pre-wrap"
-                                style={{ fontFamily: '"Georgia", "Times New Roman", serif', textAlign: 'justify' }}
+                                style={{ fontFamily: '"Georgia", "Times New Roman", serif', textAlign: 'left' }}
                             >
                                 {data.source_text ? renderContent() : (
                                     <p className="text-slate-400 italic text-center py-20">No text could be extracted from this document.</p>

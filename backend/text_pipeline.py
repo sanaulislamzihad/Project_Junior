@@ -428,6 +428,19 @@ def clean_text(text: str) -> str:
     return text.strip()
 
 
+def light_clean_preserve_newlines(text: str) -> str:
+    """
+    Light cleanup for pasted/direct text: fix hyphenation, unicode normalize,
+    clean each line (spaces) but keep newline boundaries so layout is visible in the UI.
+    """
+    if not text or not isinstance(text, str):
+        return ""
+    t = fix_pdf_hyphenation(normalize_unicode_text(text))
+    lines = t.split("\n")
+    cleaned_lines = [clean_text(line) for line in lines]
+    return "\n".join(cleaned_lines).strip()
+
+
 def clean_text_aggressive(text: str, keep_punctuation: bool = True) -> str:
     """More aggressive cleaning: keep only letters, digits, and optionally punctuation."""
     text = clean_text(text)

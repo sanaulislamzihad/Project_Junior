@@ -16,13 +16,20 @@ from sse_starlette.sse import EventSourceResponse
 
 # Import our modules
 from database import DatabaseManager
-from text_pipeline import process_document
+from text_pipeline import (
+    process_document,
+    chunk_by_paragraphs,
+    chunk_by_words,
+    DocumentMetadata,
+    light_clean_preserve_newlines,
+)
 from document_store import save_document, list_documents, delete_document, get_stats, get_chunks_for_scan, get_chunks_with_embeddings, DB_PATH
 from embedding_pipeline import encode_chunks, find_matches, extract_top_similar_sentences
 from faiss_index import invalidate_cached_index
 from diff_checker import compute_comparison
 from pdf_highlight_pipeline import highlight_pdf_matches
 from report_generator import generate_turnitin_report
+from text_highlight_builder import build_text_highlights
 
 
 def group_matches_by_source(raw_matches: list) -> list:
@@ -325,9 +332,32 @@ async def _push(queue, progress: int, stage: str):
     await asyncio.sleep(0.3)
 
 
+def _process_direct_text(raw_text: str, filename: str):
+    """Prepare direct text: keep newlines for display; chunk same string so highlights align."""
+    started = time.time()
+    cleaned_text = light_clean_preserve_newlines(raw_text or "")
+
+    # Prefer paragraph chunks for typed input; fallback to word chunks if needed.
+    chunks = chunk_by_paragraphs(cleaned_text)
+    if len(chunks) < 2:
+        chunks = chunk_by_words(cleaned_text, max_words=150, overlap_words=20, min_chunk_words=5)
+
+    meta = DocumentMetadata(
+        document_id=str(uuid.uuid4())[:8],
+        file_name=filename or "direct_text_input.txt",
+        file_path="direct_text_input",
+        num_chunks=len(chunks),
+        indexing_time=round(time.time() - started, 4),
+        file_type="text",
+        num_pages_or_slides=1,
+        raw_text_length=len(raw_text or ""),
+    )
+    return chunks, meta, cleaned_text
+
+
 async def _run_analysis(
     job_id: str,
-    tmp_path: str,
+    tmp_path: str | None,
     ext: str,
     will_save: bool,
     repo_type: str,
@@ -335,6 +365,7 @@ async def _run_analysis(
     original_filename: str,
     file_path_stored: str,
     role: str,
+    direct_text: str | None = None,
 ):
     """
     Background task: runs the full analysis pipeline.
@@ -348,15 +379,22 @@ async def _run_analysis(
 
     try:
         await _push(queue, 10, "Extracting text\u2026")
-        pdf_method = "pymupdf" if ext == ".pdf" else "pdfplumber"
-        chunks, meta, cleaned_text = await asyncio.to_thread(
-            process_document,
-            tmp_path,
-            pdf_method=pdf_method,
-            chunk_strategy="words",
-            max_chunk_size=150,
-            overlap=20,
-        )
+        if direct_text is not None:
+            chunks, meta, cleaned_text = await asyncio.to_thread(
+                _process_direct_text,
+                direct_text,
+                original_filename,
+            )
+        else:
+            pdf_method = "pymupdf" if ext == ".pdf" else "pdfplumber"
+            chunks, meta, cleaned_text = await asyncio.to_thread(
+                process_document,
+                tmp_path,
+                pdf_method=pdf_method,
+                chunk_strategy="words",
+                max_chunk_size=150,
+                overlap=20,
+            )
 
         if meta.num_pages_or_slides > 250:
             warning_msg = (
@@ -390,6 +428,7 @@ async def _run_analysis(
         top_similar_sentences = []
         highlighted_pdf_url = None
         highlight_summary = None
+        text_highlights: list = []
 
         if will_save:
             # Stage 2 — Encode embeddings + save to repo
@@ -452,7 +491,7 @@ async def _run_analysis(
                 extract_top_similar_sentences, matches
             )
 
-            if ext == ".pdf":
+            if ext == ".pdf" and tmp_path:
                 await _push(queue, 85, "Generating highlights\u2026")
                 safe_base_name = "".join(
                     ch if ch.isalnum() or ch in ("-", "_", ".") else "_"
@@ -464,6 +503,11 @@ async def _run_analysis(
                     highlight_pdf_matches, tmp_path, matches, artifact_path
                 )
                 highlighted_pdf_url = f"/artifacts/{artifact_name}"
+            elif matches:
+                await _push(queue, 85, "Mapping text highlights\u2026")
+                text_highlights = await asyncio.to_thread(
+                    build_text_highlights, cleaned_text, matches
+                )
 
         # Stage final — Finalise
         await _push(queue, 95, "Finalising report\u2026")
@@ -478,6 +522,7 @@ async def _run_analysis(
             "top_similar_sentences": top_similar_sentences,
             "highlighted_pdf_url": highlighted_pdf_url,
             "highlight_summary": highlight_summary,
+            "text_highlights": text_highlights,
             "filename": original_filename,
             "page_or_slide_count": meta.num_pages_or_slides,
             "chunk_count": meta.num_chunks,
@@ -490,17 +535,19 @@ async def _run_analysis(
     except Exception as e:
         await queue.put({"error": str(e)})
     finally:
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 @app.post("/analyze")
 async def analyze_document(
     request: Request,
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(...),
+    file: UploadFile = File(None),
+    direct_text: str = Form(""),
     repo_type: str = Form("university"),
     user_id: str = Form(""),
     role: str = Form("teacher"),
@@ -513,9 +560,19 @@ async def analyze_document(
     then GET /analyze/result/{job_id} to retrieve the final report.
     """
     _check_rate_limit(request)
-    ext = os.path.splitext(file.filename or "")[1].lower()
-    if ext not in ALLOWED_EXTENSIONS:
-        raise HTTPException(status_code=400, detail="Only PDF and PPTX files are supported.")
+    direct_text = (direct_text or "").strip()
+    has_file = file is not None and bool(file.filename)
+    has_text = bool(direct_text)
+    if has_file and has_text:
+        raise HTTPException(status_code=400, detail="Provide either a file or direct_text, not both.")
+    if not has_file and not has_text:
+        raise HTTPException(status_code=400, detail="Please upload a file or provide direct_text.")
+
+    ext = ""
+    if has_file:
+        ext = os.path.splitext(file.filename or "")[1].lower()
+        if ext not in ALLOWED_EXTENSIONS:
+            raise HTTPException(status_code=400, detail="Only PDF and PPTX files are supported for file upload.")
 
     repo_type = (repo_type or "university").lower()
     if repo_type not in ("university", "personal", "both"):
@@ -540,13 +597,17 @@ async def analyze_document(
             raise HTTPException(status_code=400, detail="user_id must be a number.")
         owner_id_val = None
 
-    # Read the upload into a temp file NOW so the file handle stays valid in the background task
-    content = await file.read()
-    with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
-        tmp.write(content)
-        tmp_path = tmp.name
+    tmp_path = None
+    if has_file:
+        # Read the upload into a temp file NOW so the file handle stays valid in the background task
+        content = await file.read()
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+            tmp.write(content)
+            tmp_path = tmp.name
 
-    original_filename = (filename_override and filename_override.strip()) or file.filename or ""
+    original_filename = (filename_override and filename_override.strip()) or (
+        file.filename if has_file else "direct_text_input.txt"
+    )
     file_path_stored = f"uploaded/{original_filename}"
 
     _cleanup_stale_entries()
@@ -564,6 +625,7 @@ async def analyze_document(
         original_filename=original_filename,
         file_path_stored=file_path_stored,
         role=role,
+        direct_text=direct_text if has_text else None,
     )
 
     return {"job_id": job_id}

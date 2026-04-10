@@ -39,6 +39,8 @@ function MainApp() {
   const [diffSuspectFile, setDiffSuspectFile] = useState(null);
   const [compareAgainst, setCompareAgainst] = useState(user?.role === 'teacher' ? ['personal'] : ['university']);
   const [checkDragActive, setCheckDragActive] = useState(false);
+  const [checkInputMode, setCheckInputMode] = useState('file');
+  const [checkText, setCheckText] = useState('');
   const [stateHydrated, setStateHydrated] = useState(false);
   const [processingFile, setProcessingFile] = useState(null);
   const [resultJobId, setResultJobId] = useState(null);
@@ -231,6 +233,45 @@ function MainApp() {
     }
   };
 
+  const handleCheckText = async () => {
+    const trimmed = (checkText || '').trim();
+    if (!trimmed) {
+      alert('Please enter text before starting analysis.');
+      return;
+    }
+    setProcessingFile(null);
+    setUploadedFile(null);
+    setCheckAnalyzing(true);
+    const formData = new FormData();
+    formData.append('direct_text', trimmed);
+    formData.append('filename_override', 'direct_text_input.txt');
+
+    let repoTypeValue = 'university';
+    if (compareAgainst.includes('university') && compareAgainst.includes('personal')) {
+      repoTypeValue = 'both';
+    } else if (compareAgainst.includes('personal')) {
+      repoTypeValue = 'personal';
+    }
+    if (repoTypeValue === 'university' && user?.role === 'teacher' && user?.id) {
+      repoTypeValue = 'both';
+    }
+    formData.append('repo_type', repoTypeValue);
+    formData.append('role', user?.role || 'teacher');
+    formData.append('add_to_repo', 'false');
+    if (user?.id) formData.append('user_id', String(user.id));
+    try {
+      const response = await axios.post('http://localhost:8000/analyze', formData);
+      setCheckJobId(response.data.job_id);
+    } catch (error) {
+      console.error("Error checking direct text:", error);
+      const msg = error.response?.data?.detail || error.message || "Backend not reachable.";
+      const hint = error.code === "ERR_NETWORK" ? " Is the backend running? cd backend && python main.py" : "";
+      alert("Failed to analyze text. " + msg + hint);
+      setCheckAnalyzing(false);
+      setProcessingFile(null);
+    }
+  };
+
   const handleCheckComplete = (result) => {
     setResultJobId(checkJobId);
     setAnalysisResult(result);
@@ -279,6 +320,8 @@ function MainApp() {
     setProcessingFile(null);
     setResultJobId(null);
     setDiffResultJobId(null);
+    setCheckInputMode('file');
+    setCheckText('');
   };
 
   const handleLogout = () => {
@@ -459,45 +502,98 @@ function MainApp() {
                         </div>
 
                         <div className="flex-1 p-8">
-                          <form
-                            onDragEnter={(e) => { e.preventDefault(); e.stopPropagation(); setCheckDragActive(true); }}
-                            onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setCheckDragActive(false); }}
-                            onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                            onDrop={(e) => {
-                              e.preventDefault(); e.stopPropagation(); setCheckDragActive(false);
-                              if (e.dataTransfer.files?.[0]) {
-                                const f = e.dataTransfer.files[0];
-                                if (f.name.toLowerCase().endsWith('.pdf') || f.name.toLowerCase().endsWith('.pptx')) handleCheckDocument(f);
-                              }
-                            }}
-                            className="w-full h-full"
-                          >
-                            <input type="file" id="check-file-upload" style={{ display: 'none' }} onChange={(e) => {
-                              const f = e.target.files?.[0];
-                              if (f) handleCheckDocument(f);
-                              e.target.value = '';
-                            }} accept=".pdf,.pptx" disabled={checkAnalyzing} />
-                            <label htmlFor="check-file-upload" className={`relative overflow-hidden group flex flex-col items-center justify-center h-72 w-full rounded-2xl border-2 border-dashed transition-all duration-300 ease-out cursor-pointer ${checkDragActive ? 'border-brand-500 bg-brand-50/50 scale-[1.01] shadow-inner' : 'border-slate-200 hover:border-brand-400 hover:bg-slate-50/30'}`}>
-                              <AnimatePresence mode="wait">
-                                {checkAnalyzing ? (
+                          <div className="mb-5 flex justify-center">
+                            <div className="inline-flex p-1 rounded-2xl border border-slate-200 bg-slate-100">
+                              <button
+                                type="button"
+                                onClick={() => setCheckInputMode('file')}
+                                disabled={checkAnalyzing}
+                                className={`px-4 py-2 text-sm font-bold rounded-xl transition-all ${checkInputMode === 'file' ? 'bg-white text-brand-700 shadow-sm border border-slate-200' : 'text-slate-500 hover:text-slate-700'}`}
+                              >
+                                PDF/PPTX
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setCheckInputMode('text')}
+                                disabled={checkAnalyzing}
+                                className={`px-4 py-2 text-sm font-bold rounded-xl transition-all ${checkInputMode === 'text' ? 'bg-white text-brand-700 shadow-sm border border-slate-200' : 'text-slate-500 hover:text-slate-700'}`}
+                              >
+                                Direct Text
+                              </button>
+                            </div>
+                          </div>
+
+                          {checkInputMode === 'file' ? (
+                            <form
+                              onDragEnter={(e) => { e.preventDefault(); e.stopPropagation(); setCheckDragActive(true); }}
+                              onDragLeave={(e) => { e.preventDefault(); e.stopPropagation(); setCheckDragActive(false); }}
+                              onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                              onDrop={(e) => {
+                                e.preventDefault(); e.stopPropagation(); setCheckDragActive(false);
+                                if (e.dataTransfer.files?.[0]) {
+                                  const f = e.dataTransfer.files[0];
+                                  if (f.name.toLowerCase().endsWith('.pdf') || f.name.toLowerCase().endsWith('.pptx')) handleCheckDocument(f);
+                                }
+                              }}
+                              className="w-full h-full"
+                            >
+                              <input type="file" id="check-file-upload" style={{ display: 'none' }} onChange={(e) => {
+                                const f = e.target.files?.[0];
+                                if (f) handleCheckDocument(f);
+                                e.target.value = '';
+                              }} accept=".pdf,.pptx" disabled={checkAnalyzing} />
+                              <label htmlFor="check-file-upload" className={`relative overflow-hidden group flex flex-col items-center justify-center h-72 w-full rounded-2xl border-2 border-dashed transition-all duration-300 ease-out cursor-pointer ${checkDragActive ? 'border-brand-500 bg-brand-50/50 scale-[1.01] shadow-inner' : 'border-slate-200 hover:border-brand-400 hover:bg-slate-50/30'}`}>
+                                <AnimatePresence mode="wait">
+                                  {checkAnalyzing ? (
+                                    <AnalyzingProgress jobId={checkJobId} onComplete={handleCheckComplete} />
+                                  ) : (
+                                    <motion.div key="idle" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} className="flex flex-col items-center z-10">
+                                      <div className={`p-6 rounded-3xl mb-4 transition-all duration-300 ${checkDragActive ? 'bg-brand-100 text-brand-600 scale-110 shadow-lg' : 'bg-slate-50 text-slate-400 group-hover:bg-white group-hover:text-brand-500 group-hover:shadow-xl group-hover:-translate-y-2'}`}>
+                                        <Upload className="w-10 h-10" />
+                                      </div>
+                                      <h3 className="text-xl font-black text-slate-800 mb-2">Drop your document here</h3>
+                                      <p className="text-slate-500 text-sm font-medium">or <span className="text-brand-600 font-bold hover:underline underline-offset-4">select from computer</span></p>
+                                      <div className="mt-8 flex gap-4 text-xs text-slate-400 font-mono font-bold uppercase tracking-tighter">
+                                        <span className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 shadow-sm">PDF Format</span>
+                                        <span className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 shadow-sm">PPTX Presentation</span>
+                                        <span className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 shadow-sm">Max 10MB</span>
+                                      </div>
+                                    </motion.div>
+                                  )}
+                                </AnimatePresence>
+                              </label>
+                            </form>
+                          ) : (
+                            <div className="w-full">
+                              {checkAnalyzing ? (
+                                <div className="h-72 rounded-2xl border border-slate-200 bg-white flex items-center justify-center">
                                   <AnalyzingProgress jobId={checkJobId} onComplete={handleCheckComplete} />
-                                ) : (
-                                  <motion.div key="idle" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} className="flex flex-col items-center z-10">
-                                    <div className={`p-6 rounded-3xl mb-4 transition-all duration-300 ${checkDragActive ? 'bg-brand-100 text-brand-600 scale-110 shadow-lg' : 'bg-slate-50 text-slate-400 group-hover:bg-white group-hover:text-brand-500 group-hover:shadow-xl group-hover:-translate-y-2'}`}>
-                                      <Upload className="w-10 h-10" />
+                                </div>
+                              ) : (
+                                <div className="rounded-2xl border border-slate-200 bg-white p-5 space-y-4">
+                                  <textarea
+                                    value={checkText}
+                                    onChange={(e) => setCheckText(e.target.value)}
+                                    placeholder="Paste or type your text here for AI similarity check..."
+                                    className="w-full h-52 resize-none rounded-xl border border-slate-200 px-4 py-3 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-brand-200 focus:border-brand-400"
+                                  />
+                                  <div className="flex items-center justify-between gap-3">
+                                    <div className="text-xs text-slate-400 font-medium">
+                                      Enter text directly and compare against selected repository.
                                     </div>
-                                    <h3 className="text-xl font-black text-slate-800 mb-2">Drop your document here</h3>
-                                    <p className="text-slate-500 text-sm font-medium">or <span className="text-brand-600 font-bold hover:underline underline-offset-4">select from computer</span></p>
-                                    <div className="mt-8 flex gap-4 text-xs text-slate-400 font-mono font-bold uppercase tracking-tighter">
-                                      <span className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 shadow-sm">PDF Format</span>
-                                      <span className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 shadow-sm">PPTX Presentation</span>
-                                      <span className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 shadow-sm">Max 10MB</span>
-                                    </div>
-                                  </motion.div>
-                                )}
-                              </AnimatePresence>
-                            </label>
-                          </form>
+                                    <button
+                                      type="button"
+                                      onClick={handleCheckText}
+                                      disabled={!checkText.trim()}
+                                      className={`px-5 py-2.5 rounded-xl text-sm font-bold transition-all ${checkText.trim() ? 'bg-slate-900 text-white hover:bg-slate-800' : 'bg-slate-100 text-slate-400 cursor-not-allowed'}`}
+                                    >
+                                      Analyze Text
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       </motion.div>
                     </div>
