@@ -142,11 +142,10 @@ def save_index_to_disk(repo_type: str, owner_id, index, chunk_infos: list):
     except Exception:
         save_index = index
     faiss.write_index(save_index, index_path)
-    import pickle
+    import json
     meta_path = os.path.join(INDEX_DIR, f"{key}.meta")
-    with open(meta_path, "wb") as f:
-        pickle.dump(chunk_infos, f)
-    # Chunk metadata (document_id, file_name, chunk_index, chunk_text) is stored in .meta for later lookup.
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(chunk_infos, f)
 
 
 def load_index_from_disk(repo_type: str, owner_id) -> tuple:
@@ -170,12 +169,11 @@ def load_index_from_disk(repo_type: str, owner_id) -> tuple:
     except Exception:
         return None, []
     try:
-        import pickle
-        with open(meta_path, "rb") as f:
-            chunk_infos = pickle.load(f)
+        import json
+        with open(meta_path, "r", encoding="utf-8") as f:
+            chunk_infos = json.load(f)
     except Exception:
         return None, []
-    # Caller uses chunk_infos to map FAISS result indices back to document and chunk text.
     return index, chunk_infos
 
 

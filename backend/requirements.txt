@@ -1,9 +1,11 @@
 fastapi
 uvicorn
+sse-starlette
 python-multipart
 scikit-learn
 pdfplumber
 PyMuPDF
+PyPDF2
 python-pptx
 sentence-transformers
 faiss-cpu

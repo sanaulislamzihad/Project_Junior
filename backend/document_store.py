@@ -266,16 +266,17 @@ def delete_document(document_id: str, db_path: str = DB_PATH) -> bool:
     conn = get_connection(db_path)
     cursor = conn.cursor()
     try:
+        cursor.execute("SELECT COUNT(*) FROM documents WHERE document_id = ?", (document_id,))
+        exists = cursor.fetchone()[0] > 0
         cursor.execute("DELETE FROM document_chunk_embeddings WHERE document_id = ?", (document_id,))
         cursor.execute("DELETE FROM document_chunks WHERE document_id = ?", (document_id,))
         cursor.execute("DELETE FROM documents WHERE document_id = ?", (document_id,))
         conn.commit()
-        # Invalidate all FAISS caches so next search rebuilds (we do not know repo_type/owner_id here).
         try:
             from faiss_index import invalidate_all_cached_indexes
             invalidate_all_cached_indexes()
         except Exception:
             pass
-        return cursor.rowcount > 0  # rowcount from last DELETE (documents)
+        return exists
     finally:
         conn.close()

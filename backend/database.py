@@ -3,7 +3,8 @@ import os
 from typing import List, Dict, Optional
 import bcrypt
 
-DB_name = os.path.join("..", "auth.db")
+_THIS_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_name = os.path.abspath(os.path.join(_THIS_DIR, "..", "auth.db"))
 
 class DatabaseManager:
     def __init__(self, db_path: str = DB_name):
@@ -13,35 +14,36 @@ class DatabaseManager:
     def _init_db(self):
         """Initialize the SQLite database with the users table."""
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Table for Users (auth system)
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS users (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL,
-                email TEXT NOT NULL UNIQUE,
-                password_hash TEXT NOT NULL,
-                role TEXT NOT NULL CHECK(role IN ('admin', 'teacher', 'student')),
-                nsu_id TEXT,
-                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        conn.commit()
-        
-        # Seed default admin if no admin exists
-        cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'")
-        if cursor.fetchone()[0] == 0:
-            pw_hash = bcrypt.hashpw("admin123".encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-            cursor.execute(
-                "INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, ?)",
-                ("System Admin", "admin@nsu.edu", pw_hash, "admin")
-            )
+        try:
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    email TEXT NOT NULL UNIQUE,
+                    password_hash TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK(role IN ('admin', 'teacher', 'student')),
+                    nsu_id TEXT,
+                    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+
             conn.commit()
-            print("Seeded default admin account: admin@nsu.edu")
-        
-        conn.close()
+
+            cursor.execute("SELECT COUNT(*) FROM users WHERE role = 'admin'")
+            if cursor.fetchone()[0] == 0:
+                default_pw = os.getenv("ADMIN_DEFAULT_PASSWORD", "admin123")
+                pw_hash = bcrypt.hashpw(default_pw.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+                default_email = os.getenv("ADMIN_DEFAULT_EMAIL", "admin@nsu.edu")
+                cursor.execute(
+                    "INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, ?)",
+                    ("System Admin", default_email, pw_hash, "admin")
+                )
+                conn.commit()
+                print(f"Seeded default admin account: {default_email}")
+        finally:
+            conn.close()
 
     # ==================== USER METHODS ====================
 

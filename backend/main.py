@@ -1,11 +1,14 @@
 import asyncio
 import json
 import os
+import secrets
 import tempfile
+import time
 import uuid
+from collections import defaultdict
 from datetime import datetime, timezone
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException, Request, UploadFile, File, Form
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -95,10 +98,10 @@ app = FastAPI(title="NSU PlagiChecker Auth")
 ARTIFACTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "artifacts")
 os.makedirs(ARTIFACTS_DIR, exist_ok=True)
 
-# CORS setup
+_CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -108,10 +111,75 @@ app.add_middleware(
 db = DatabaseManager()
 
 # ==================== SSE JOB STORES ====================
-# Each job_id maps to its own asyncio.Queue.
-# Concurrent jobs NEVER share state — no clashing possible.
-jobs: dict = {}              # job_id -> asyncio.Queue
-analysis_results: dict = {}  # job_id -> final result dict
+JOB_TTL = int(os.getenv("JOB_TTL", "600"))
+jobs: dict = {}              # job_id -> {"queue": asyncio.Queue, "created_at": float}
+analysis_results: dict = {}  # job_id -> {"data": dict, "created_at": float}
+
+
+def _cleanup_stale_entries():
+    """Remove job queues and results older than JOB_TTL to prevent memory leaks."""
+    now = time.time()
+    for k in [k for k, v in jobs.items() if now - v.get("created_at", 0) > JOB_TTL]:
+        jobs.pop(k, None)
+    for k in [k for k, v in analysis_results.items() if now - v.get("created_at", 0) > JOB_TTL]:
+        analysis_results.pop(k, None)
+
+
+# ==================== SESSION / AUTH ====================
+SESSION_TTL = int(os.getenv("SESSION_TTL", "86400"))
+_sessions: dict = {}
+
+
+def _create_session(user: dict) -> str:
+    token = secrets.token_urlsafe(32)
+    _sessions[token] = {"user": user, "created_at": time.time()}
+    return token
+
+
+def _get_session_user(request: Request):
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return None
+    token = auth_header[7:]
+    session = _sessions.get(token)
+    if not session:
+        return None
+    if time.time() - session["created_at"] > SESSION_TTL:
+        _sessions.pop(token, None)
+        return None
+    return session["user"]
+
+
+def require_auth(request: Request) -> dict:
+    user = _get_session_user(request)
+    if not user:
+        raise HTTPException(status_code=401, detail="Authentication required. Please login first.")
+    return user
+
+
+def require_admin(request: Request) -> dict:
+    user = require_auth(request)
+    if user.get("role") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required.")
+    return user
+
+
+# ==================== RATE LIMITING ====================
+_rate_limits: dict = defaultdict(list)
+RATE_LIMIT_ANALYZE = int(os.getenv("RATE_LIMIT_ANALYZE", "10"))
+RATE_WINDOW = 60
+
+
+def _check_rate_limit(request: Request, limit: int = None):
+    if limit is None:
+        limit = RATE_LIMIT_ANALYZE
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    _rate_limits[client_ip] = [t for t in _rate_limits[client_ip] if now - t < RATE_WINDOW]
+    if len(_rate_limits[client_ip]) >= limit:
+        raise HTTPException(status_code=429, detail="Too many requests. Please try again later.")
+    _rate_limits[client_ip].append(now)
+
 
 # ==================== AUTH MODELS ====================
 
@@ -144,7 +212,8 @@ def login(req: LoginRequest):
     user = db.authenticate_user(req.email, req.password, req.role)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid email or password for this role.")
-    return {"success": True, "user": user}
+    token = _create_session(user)
+    return {"success": True, "user": user, "token": token}
 
 @app.post("/auth/register")
 def register(req: RegisterRequest):
@@ -162,12 +231,12 @@ def register(req: RegisterRequest):
     return {"success": True, "user": user}
 
 @app.get("/auth/users")
-def get_users():
+def get_users(current_user: dict = Depends(require_admin)):
     users = db.get_all_users(exclude_admins=True)
     return {"users": users}
 
 @app.post("/auth/users/teacher")
-def add_teacher(req: AddTeacherRequest):
+def add_teacher(req: AddTeacherRequest, current_user: dict = Depends(require_admin)):
     if db.email_exists(req.email):
         raise HTTPException(status_code=409, detail="An account with this email already exists.")
     user = db.add_user(
@@ -181,7 +250,7 @@ def add_teacher(req: AddTeacherRequest):
     return {"success": True, "user": user}
 
 @app.delete("/auth/users/{user_id}")
-def delete_user(user_id: int):
+def delete_user(user_id: int, current_user: dict = Depends(require_admin)):
     success = db.delete_user(user_id)
     if not success:
         raise HTTPException(status_code=404, detail="User not found or cannot be deleted.")
@@ -263,9 +332,8 @@ ALLOWED_EXTENSIONS = {".pdf", ".pptx"}
 
 
 async def _push(queue, progress: int, stage: str):
-    """Push a progress event then pause briefly so UX is visible."""
     await queue.put({"progress": progress, "stage": stage})
-    await asyncio.sleep(0.8)
+    await asyncio.sleep(0.3)
 
 
 async def _run_analysis(
@@ -284,12 +352,12 @@ async def _run_analysis(
     Every blocking call is wrapped in asyncio.to_thread() so concurrent
     uploads never starve each other's SSE streams (no clashing).
     """
-    queue = jobs.get(job_id)
+    entry = jobs.get(job_id)
+    queue = entry.get("queue") if entry else None
     if queue is None:
         return
 
     try:
-        # Stage 1 — Extract & chunk text
         await _push(queue, 10, "Extracting text\u2026")
         pdf_method = "pymupdf" if ext == ".pdf" else "pdfplumber"
         chunks, meta, cleaned_text = await asyncio.to_thread(
@@ -308,14 +376,14 @@ async def _run_analysis(
                 f"Please upload a document with 250 pages or fewer."
             )
             await queue.put({"progress": 100, "stage": "Done", "warning": warning_msg})
-            analysis_results[job_id] = {
+            analysis_results[job_id] = {"data": {
                 "warning": warning_msg,
                 "page_or_slide_count": meta.num_pages_or_slides,
                 "filename": original_filename,
                 "overall_similarity": 0.0,
                 "matches": [],
                 "top_similar_sentences": [],
-            }
+            }, "created_at": time.time()}
             return
 
         await _push(queue, 25, "Chunking complete\u2026")
@@ -406,7 +474,7 @@ async def _run_analysis(
                 highlight_summary = await asyncio.to_thread(
                     highlight_pdf_matches, tmp_path, matches, artifact_path
                 )
-                highlighted_pdf_url = f"http://localhost:8000/artifacts/{artifact_name}"
+                highlighted_pdf_url = f"/artifacts/{artifact_name}"
 
         # Stage final — Finalise
         await _push(queue, 95, "Finalising report\u2026")
@@ -426,9 +494,8 @@ async def _run_analysis(
             "chunk_count": meta.num_chunks,
             "metadata": {**meta_dict, "file_name": original_filename},
         }
-        analysis_results[job_id] = result
+        analysis_results[job_id] = {"data": result, "created_at": time.time()}
 
-        # Signal completion — frontend will fetch result via GET
         await queue.put({"progress": 100, "stage": "Done"})
 
     except Exception as e:
@@ -442,6 +509,7 @@ async def _run_analysis(
 
 @app.post("/analyze")
 async def analyze_document(
+    request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     repo_type: str = Form("university"),
@@ -455,6 +523,7 @@ async def analyze_document(
     The client opens GET /analyze/stream/{job_id} for real-time progress,
     then GET /analyze/result/{job_id} to retrieve the final report.
     """
+    _check_rate_limit(request)
     ext = os.path.splitext(file.filename or "")[1].lower()
     if ext not in ALLOWED_EXTENSIONS:
         raise HTTPException(status_code=400, detail="Only PDF and PPTX files are supported.")
@@ -491,9 +560,9 @@ async def analyze_document(
     original_filename = (filename_override and filename_override.strip()) or file.filename or ""
     file_path_stored = f"uploaded/{original_filename}"
 
-    # Each upload gets its own isolated queue — concurrent jobs never clash
+    _cleanup_stale_entries()
     job_id = str(uuid.uuid4())
-    jobs[job_id] = asyncio.Queue()
+    jobs[job_id] = {"queue": asyncio.Queue(), "created_at": time.time()}
 
     background_tasks.add_task(
         _run_analysis,
@@ -518,14 +587,15 @@ async def analyze_stream(job_id: str):
     Yields {progress, stage} JSON objects until done or error.
     Each job has its OWN queue — concurrent uploads never interfere.
     """
-    queue = jobs.get(job_id)
+    entry = jobs.get(job_id)
+    queue = entry.get("queue") if entry else None
     if queue is None:
         raise HTTPException(status_code=404, detail="Job not found.")
 
     async def event_generator():
         while True:
             try:
-                event = await asyncio.wait_for(queue.get(), timeout=86400.0)
+                event = await asyncio.wait_for(queue.get(), timeout=300.0)
             except asyncio.TimeoutError:
                 yield {"event": "error", "data": json.dumps({"error": "Job timed out."})}
                 break
@@ -548,12 +618,13 @@ async def analyze_stream(job_id: str):
 @app.get("/analyze/result/{job_id}")
 async def analyze_result(job_id: str):
     """
-    Fetch the stored result for a completed job, then clean it up.
+    Fetch the stored result for a completed job.
+    Results are kept for JOB_TTL seconds and cleaned up automatically.
     """
-    result = analysis_results.pop(job_id, None)
-    if result is None:
+    entry = analysis_results.get(job_id)
+    if entry is None or "data" not in entry:
         raise HTTPException(status_code=404, detail="Result not found. Job may not be complete yet.")
-    return result
+    return entry["data"]
 
 
 @app.post("/analyze/report")
@@ -562,9 +633,6 @@ async def generate_report(request: Request):
     Generate a Turnitin-style similarity report PDF and return it as a download.
     Body: same JSON payload as the analysis result.
     """
-    import uuid, tempfile
-    from fastapi.responses import FileResponse
-
     try:
         data = await request.json()
     except Exception:
@@ -588,6 +656,24 @@ async def generate_report(request: Request):
     )
 
 
+@app.on_event("startup")
+def _startup_cleanup():
+    """Remove artifacts older than 1 hour on startup."""
+    cutoff = time.time() - 3600
+    if os.path.isdir(ARTIFACTS_DIR):
+        for name in os.listdir(ARTIFACTS_DIR):
+            path = os.path.join(ARTIFACTS_DIR, name)
+            try:
+                if os.path.isfile(path) and os.path.getmtime(path) < cutoff:
+                    os.unlink(path)
+            except OSError:
+                pass
+
+
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(
+        app,
+        host=os.getenv("HOST", "0.0.0.0"),
+        port=int(os.getenv("PORT", "8000")),
+    )

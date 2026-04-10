@@ -60,7 +60,7 @@ except Exception:
     DEFAULT_TOP_K = 10
 
 _MODEL = None
-# Global lazy-loaded sentence transformer model (single instance for all requests).
+_MODEL_LOCK = __import__("threading").Lock()
 
 
 def _tokenize(text: str) -> set:
@@ -338,14 +338,14 @@ DEFAULT_EMBEDDING_DIM = 768
 
 
 def _get_model():
-    # Lazy-load the sentence transformer model on first use; use fixed cache so restart does not re-download.
-    # Model is moved to DEVICE (cuda/mps/cpu) automatically by SentenceTransformer.
     global _MODEL
     if _MODEL is None:
-        from sentence_transformers import SentenceTransformer
-        os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
-        _MODEL = SentenceTransformer(EMBEDDING_MODEL, cache_folder=MODEL_CACHE_DIR, device=DEVICE)
-        logger.info("SentenceTransformer loaded on device: %s", DEVICE)
+        with _MODEL_LOCK:
+            if _MODEL is None:
+                from sentence_transformers import SentenceTransformer
+                os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
+                _MODEL = SentenceTransformer(EMBEDDING_MODEL, cache_folder=MODEL_CACHE_DIR, device=DEVICE)
+                logger.info("SentenceTransformer loaded on device: %s", DEVICE)
     return _MODEL
 
 
