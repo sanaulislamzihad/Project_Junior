@@ -20,7 +20,7 @@ from text_pipeline import process_document
 from document_store import save_document, list_documents, delete_document, get_stats, get_chunks_for_scan, get_chunks_with_embeddings, DB_PATH
 from embedding_pipeline import encode_chunks, find_matches, extract_top_similar_sentences
 from faiss_index import invalidate_cached_index
-from diff_checker import compute_diff
+from diff_checker import compute_comparison
 from pdf_highlight_pipeline import highlight_pdf_matches
 from report_generator import generate_turnitin_report
 
@@ -200,11 +200,6 @@ class AddTeacherRequest(BaseModel):
     password: str
 
 
-class DiffCompareRequest(BaseModel):
-    text_a: str
-    text_b: str
-    context_lines: int = 2
-
 # ==================== AUTH ENDPOINTS ====================
 
 @app.post("/auth/login")
@@ -256,12 +251,6 @@ def delete_user(user_id: int, current_user: dict = Depends(require_admin)):
         raise HTTPException(status_code=404, detail="User not found or cannot be deleted.")
     return {"success": True}
 
-
-@app.post("/diff/compare")
-def diff_compare(req: DiffCompareRequest):
-    if not req.text_a and not req.text_b:
-        raise HTTPException(status_code=400, detail="At least one text input is required.")
-    return compute_diff(req.text_a or "", req.text_b or "", context_lines=req.context_lines)
 
 @app.get("/")
 def health_check():
@@ -653,6 +642,170 @@ async def generate_report(request: Request):
         media_type="application/pdf",
         filename=f"Similarity_Report_{data.get('filename', 'document')}.pdf",
         headers={"Content-Disposition": f"attachment; filename=\"Similarity_Report.pdf\""}
+    )
+
+
+# ==================== DOCUMENT COMPARISON (SSE + Background Task) ====================
+
+async def _run_comparison(
+    job_id: str,
+    source_path: str,
+    target_path: str,
+    source_filename: str,
+    target_filename: str,
+):
+    """Background task: compare two PDFs, highlight extra text in yellow."""
+    entry = jobs.get(job_id)
+    queue = entry.get("queue") if entry else None
+    if queue is None:
+        return
+
+    try:
+        await _push(queue, 10, "Reading documents\u2026")
+        await _push(queue, 30, "Extracting text\u2026")
+        await _push(queue, 50, "Comparing documents\u2026")
+
+        safe_name = "".join(
+            ch if ch.isalnum() or ch in ("-", "_", ".") else "_"
+            for ch in target_filename
+        )
+        artifact_name = f"cmp_{job_id[:8]}_{safe_name}"
+        artifact_path = os.path.join(ARTIFACTS_DIR, artifact_name)
+
+        result = await asyncio.to_thread(
+            compute_comparison, source_path, target_path, artifact_path
+        )
+
+        await _push(queue, 80, "Generating highlights\u2026")
+
+        highlighted_pdf_url = f"/artifacts/{artifact_name}"
+
+        await _push(queue, 95, "Finalising\u2026")
+
+        # Build highlight_summary.located_sentences in the same format
+        # as the plagiarism check pipeline so PdfViewer renders identically.
+        raw_highlights = result.get("frontend_highlights") or []
+        located_sentences = []
+        for hl in raw_highlights:
+            located_sentences.append({
+                "page_number": hl["page_number"],
+                "regions": hl["regions"],
+                "bbox": hl["regions"][0] if hl["regions"] else [0, 0, 0, 0],
+                "match_index": 8,
+                "match_indices": [8],
+                "matched_file_names": [],
+            })
+
+        final = {
+            "overall_similarity": result["similarity_score"],
+            "extra_percentage": result["extra_percentage"],
+            "total_words": result["total_words"],
+            "extra_word_count": result["extra_word_count"],
+            "common_word_count": result["common_word_count"],
+            "semantic_similarity": 0,
+            "lexical_similarity": 0,
+            "fingerprint_similarity": 0,
+            "matches": [],
+            "top_similar_sentences": [],
+            "highlighted_pdf_url": highlighted_pdf_url,
+            "highlight_summary": {
+                "located_sentence_count": len(located_sentences),
+                "highlight_count": result["highlight_count"],
+                "located_sentences": located_sentences,
+            },
+            "filename": target_filename,
+            "source_filename": source_filename,
+            "source_text": result.get("suspect_text", ""),
+            "page_or_slide_count": result.get("suspect_pages", 0),
+            "chunk_count": 0,
+            "highlight_count": result["highlight_count"],
+            "extra_snippets": result.get("extra_snippets", []),
+            "metadata": {
+                "file_name": target_filename,
+                "source_file_name": source_filename,
+                "document_id": f"comparison-{job_id[:8]}",
+                "file_type": "pdf",
+                "num_pages_or_slides": result.get("suspect_pages", 0),
+            },
+            "is_comparison": True,
+        }
+        analysis_results[job_id] = {"data": final, "created_at": time.time()}
+        await queue.put({"progress": 100, "stage": "Done"})
+
+    except Exception as e:
+        await queue.put({"error": str(e)})
+    finally:
+        for p in (source_path, target_path):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+
+
+@app.post("/compare")
+async def compare_documents(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    source_file: UploadFile = File(...),
+    target_file: UploadFile = File(...),
+):
+    """Compare two PDF documents. Returns job_id for SSE progress tracking."""
+    _check_rate_limit(request)
+
+    source_ext = os.path.splitext(source_file.filename or "")[1].lower()
+    target_ext = os.path.splitext(target_file.filename or "")[1].lower()
+    if source_ext != ".pdf" or target_ext != ".pdf":
+        raise HTTPException(status_code=400, detail="Both files must be PDF.")
+
+    source_content = await source_file.read()
+    target_content = await target_file.read()
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_s:
+        tmp_s.write(source_content)
+        source_path = tmp_s.name
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_t:
+        tmp_t.write(target_content)
+        target_path = tmp_t.name
+
+    _cleanup_stale_entries()
+    job_id = str(uuid.uuid4())
+    jobs[job_id] = {"queue": asyncio.Queue(), "created_at": time.time()}
+
+    background_tasks.add_task(
+        _run_comparison,
+        job_id=job_id,
+        source_path=source_path,
+        target_path=target_path,
+        source_filename=source_file.filename or "source.pdf",
+        target_filename=target_file.filename or "suspect.pdf",
+    )
+
+    return {"job_id": job_id}
+
+
+@app.post("/compare/report")
+async def generate_comparison_report_endpoint(request: Request):
+    """Generate a comparison report PDF and return it as a download."""
+    try:
+        data = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON body")
+
+    from report_generator import generate_comparison_report
+
+    report_filename = f"comparison_report_{uuid.uuid4().hex[:8]}.pdf"
+    output_path = os.path.join(ARTIFACTS_DIR, report_filename)
+
+    try:
+        await asyncio.to_thread(generate_comparison_report, data, output_path)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Report generation failed: {e}")
+
+    return FileResponse(
+        output_path,
+        media_type="application/pdf",
+        filename=f"Comparison_Report_{data.get('filename', 'document')}.pdf",
+        headers={"Content-Disposition": f"attachment; filename=\"Comparison_Report.pdf\""},
     )
 
 

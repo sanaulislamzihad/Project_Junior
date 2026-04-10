@@ -11,11 +11,29 @@ const AnalyzingProgress = ({ jobId, onComplete, title = "Analyzing Document...",
     const esRef = useRef(null);
     const doneRef = useRef(false);
 
+    const fetchResultFallback = async () => {
+        try {
+            const res = await axios.get(`http://localhost:8000/analyze/result/${jobId}`);
+            doneRef.current = true;
+            setProgress(100);
+            setStage("Done");
+            if (onComplete) onComplete(res.data);
+            return true;
+        } catch {
+            return false;
+        }
+    };
+
     useEffect(() => {
         if (!jobId) return;
         doneRef.current = false;
+        setError(null);
+        setProgress(0);
+        setStage("Starting\u2026");
         setStartTime(Date.now());
         setEta("Estimating remaining time\u2026");
+
+        let serverErrorHandled = false;
 
         const es = new EventSource(`http://localhost:8000/analyze/stream/${jobId}`);
         esRef.current = es;
@@ -36,7 +54,6 @@ const AnalyzingProgress = ({ jobId, onComplete, title = "Analyzing Document...",
                 if (data.progress === 100 && data.stage === "Done") {
                     doneRef.current = true;
                     es.close();
-                    // Fetch the stored result from the dedicated endpoint
                     try {
                         const res = await axios.get(`http://localhost:8000/analyze/result/${jobId}`);
                         if (onComplete) onComplete(res.data);
@@ -50,22 +67,24 @@ const AnalyzingProgress = ({ jobId, onComplete, title = "Analyzing Document...",
         };
 
         es.addEventListener("error", (event) => {
-            try {
-                const data = JSON.parse(event.data);
-                setError(data.error || "An error occurred during analysis.");
-            } catch {
-                if (!doneRef.current) {
-                    setError("Connection to the analysis stream was lost.");
-                }
+            if (event?.data) {
+                try {
+                    const data = JSON.parse(event.data);
+                    serverErrorHandled = true;
+                    setError(data.error || "An error occurred during analysis.");
+                    es.close();
+                } catch {}
             }
-            es.close();
         });
 
         es.onerror = () => {
-            if (!doneRef.current) {
-                setError("Lost connection to the analysis stream. Please try again.");
-                es.close();
-            }
+            if (doneRef.current || serverErrorHandled) return;
+            es.close();
+            fetchResultFallback().then((ok) => {
+                if (!ok) {
+                    setError("Lost connection to the analysis stream. Please try again.");
+                }
+            });
         };
 
         return () => {

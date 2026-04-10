@@ -84,7 +84,7 @@ const ReportView = ({ data, pdfFile, onReset }) => {
             setReportLoading(false);
         }
     };
-    const pdfSource = pdfFile || data.highlighted_pdf_url || null;
+    const pdfSource = pdfFile || (data.highlighted_pdf_url ? `http://localhost:8000${data.highlighted_pdf_url}` : null);
     const interactiveHighlights = data.highlight_summary?.located_sentences || [];
 
     useEffect(() => {

@@ -836,6 +836,229 @@ def _generate_source_list_pdf(data: Dict[str, Any], output_path: str) -> str:
     return output_path
 
 
+def generate_comparison_report(data: Dict[str, Any], output_path: str) -> str:
+    """
+    Generate a comparison report PDF.
+    Combines a summary cover page with the highlighted suspect PDF.
+    """
+    if not REPORTLAB_AVAILABLE:
+        raise ImportError("reportlab is required. pip install reportlab")
+
+    highlighted_url = data.get("highlighted_pdf_url")
+    highlighted_path = None
+    if highlighted_url:
+        try:
+            artifact_name = highlighted_url.rsplit("/artifacts/", 1)[-1]
+        except (IndexError, ValueError):
+            artifact_name = None
+        if artifact_name:
+            artifacts_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "artifacts")
+            candidate = os.path.join(artifacts_dir, os.path.basename(artifact_name))
+            if os.path.isfile(candidate):
+                highlighted_path = candidate
+
+    cover_path = output_path + ".cover.tmp.pdf"
+    try:
+        _generate_comparison_cover(data, cover_path)
+
+        if highlighted_path:
+            try:
+                import fitz as pymupdf
+            except ImportError:
+                os.rename(cover_path, output_path)
+                return output_path
+
+            result_doc = pymupdf.open(cover_path)
+            hl_doc = pymupdf.open(highlighted_path)
+            result_doc.insert_pdf(hl_doc)
+            result_doc.save(output_path, garbage=4, deflate=True)
+            result_doc.close()
+            hl_doc.close()
+        else:
+            os.rename(cover_path, output_path)
+    finally:
+        try:
+            os.unlink(cover_path)
+        except OSError:
+            pass
+
+    return output_path
+
+
+def _generate_comparison_cover(data: Dict[str, Any], output_path: str) -> str:
+    """Generate the summary cover page for a comparison report."""
+    os.makedirs(os.path.dirname(output_path) if os.path.dirname(output_path) else ".", exist_ok=True)
+
+    doc = SimpleDocTemplate(
+        output_path, pagesize=A4,
+        leftMargin=18 * mm, rightMargin=18 * mm,
+        topMargin=15 * mm, bottomMargin=28 * mm,
+        title="Document Comparison Report", author="NSU PlagiChecker",
+    )
+    W = A4[0] - 36 * mm
+    story = []
+    base = getSampleStyleSheet()
+
+    similarity = min(100, max(0, round(float(data.get("overall_similarity", 0)))))
+    extra_pct = min(100, max(0, round(float(data.get("extra_percentage", 0)))))
+    filename = data.get("filename") or "Unknown Document"
+    source_name = (data.get("metadata") or {}).get("source_file_name") or data.get("source_filename") or "Source Document"
+    generated_at = datetime.now().strftime("%d %B %Y, %H:%M")
+    score_clr = _score_color(100 - similarity)
+
+    # Header banner
+    header_data = [[
+        Paragraph('<font color="white" size="20"><b>Comparison Report</b></font>', base["Normal"]),
+        Paragraph(f'<font color="#a0aec0" size="8">Generated: {generated_at}</font>', base["Normal"]),
+    ]]
+    header_table = Table(header_data, colWidths=[W * 0.65, W * 0.35])
+    header_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), HEADER_BG),
+        ('ALIGN', (0, 0), (0, 0), 'LEFT'),
+        ('ALIGN', (1, 0), (1, 0), 'RIGHT'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('TOPPADDING', (0, 0), (-1, -1), 14),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 14),
+        ('LEFTPADDING', (0, 0), (0, 0), 14),
+        ('RIGHTPADDING', (1, 0), (1, 0), 14),
+        ('ROUNDEDCORNERS', [6, 6, 6, 6]),
+    ]))
+    story.append(header_table)
+    story.append(Spacer(1, 14))
+
+    # Document info
+    info_rows = [
+        ["Source Document", source_name],
+        ["Suspect Document", filename],
+        ["Similarity", f"{similarity}%"],
+        ["Extra Text", f"{extra_pct}%"],
+        ["Total Words", str(data.get("total_words", 0))],
+        ["Extra Words", str(data.get("extra_word_count", 0))],
+        ["Common Words", str(data.get("common_word_count", 0))],
+        ["Highlights", str(data.get("highlight_count", 0))],
+        ["Report Generated", generated_at],
+    ]
+
+    def _cell(txt, bold=False):
+        style = ParagraphStyle(
+            'mc', fontSize=9,
+            fontName="Helvetica-Bold" if bold else "Helvetica",
+            textColor=TEXT_DARK if bold else TEXT_MID, leading=12,
+        )
+        return Paragraph(txt, style)
+
+    table_data = [[_cell(k, bold=True), _cell(v)] for k, v in info_rows]
+    info_table = Table(table_data, colWidths=[W * 0.38, W * 0.62])
+    info_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.white),
+        ('BACKGROUND', (0, 0), (0, -1), CARD_BG),
+        ('BOX', (0, 0), (-1, -1), 0.5, BORDER_CLR),
+        ('INNERGRID', (0, 0), (-1, -1), 0.3, BORDER_CLR),
+        ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+        ('LEFTPADDING', (0, 0), (-1, -1), 10),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 10),
+        ('ROUNDEDCORNERS', [4, 4, 4, 4]),
+    ]))
+    story.append(info_table)
+    story.append(Spacer(1, 18))
+
+    # Similarity gauge
+    story.append(Paragraph("Similarity Overview", ParagraphStyle(
+        "h2", fontSize=13, fontName="Helvetica-Bold", textColor=TEXT_DARK,
+        spaceBefore=10, spaceAfter=4, leading=16,
+    )))
+    story.append(HRFlowable(width=W, thickness=0.5, color=BORDER_CLR, spaceAfter=10))
+
+    gauge = _make_ring_gauge(similarity, size=90)
+    gauge_cell = Table([[gauge]], colWidths=[100])
+    gauge_cell.setStyle(TableStyle([
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('BACKGROUND', (0, 0), (-1, -1), colors.white),
+        ('BOX', (0, 0), (-1, -1), 0.5, BORDER_CLR),
+        ('ROUNDEDCORNERS', [6, 6, 6, 6]),
+        ('TOPPADDING', (0, 0), (-1, -1), 12),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
+    ]))
+
+    bars = [
+        _mini_bar_table("Similarity", similarity, GREEN_LOW if similarity >= 70 else ORANGE_MED if similarity >= 40 else RED_HIGH),
+        Spacer(1, 4),
+        _mini_bar_table("Extra Text", extra_pct, RED_HIGH if extra_pct >= 30 else ORANGE_MED if extra_pct >= 10 else GREEN_LOW),
+    ]
+    bars_table = Table([[item] for item in bars], colWidths=[W - 120])
+    bars_table.setStyle(TableStyle([
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+        ('TOPPADDING', (0, 0), (-1, -1), 0),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+    ]))
+    overview = Table([[gauge_cell, bars_table]], colWidths=[110, W - 110])
+    overview.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        ('LEFTPADDING', (0, 0), (0, 0), 0),
+        ('RIGHTPADDING', (0, 0), (0, 0), 10),
+        ('LEFTPADDING', (1, 0), (1, 0), 10),
+        ('BACKGROUND', (1, 0), (1, 0), CARD_BG),
+        ('BOX', (1, 0), (1, 0), 0.5, BORDER_CLR),
+        ('TOPPADDING', (1, 0), (1, 0), 12),
+        ('BOTTOMPADDING', (1, 0), (1, 0), 12),
+        ('RIGHTPADDING', (1, 0), (1, 0), 14),
+    ]))
+    story.append(overview)
+    story.append(Spacer(1, 18))
+
+    # Extra text snippets
+    snippets = data.get("extra_snippets") or []
+    if snippets:
+        story.append(Paragraph("Extra Text Found in Suspect Document", ParagraphStyle(
+            "h2s", fontSize=13, fontName="Helvetica-Bold", textColor=TEXT_DARK,
+            spaceBefore=10, spaceAfter=4, leading=16,
+        )))
+        story.append(HRFlowable(width=W, thickness=0.5, color=BORDER_CLR, spaceAfter=8))
+        story.append(Paragraph(
+            f'<font size="9" color="#718096">{len(snippets)} distinct additions detected. '
+            f'Yellow highlighted text in the following pages shows the extra content.</font>',
+            base["Normal"],
+        ))
+        story.append(Spacer(1, 6))
+
+        snippet_style = ParagraphStyle(
+            "snip", fontSize=8, fontName="Helvetica", textColor=TEXT_DARK,
+            leading=11, leftIndent=8, backColor=colors.HexColor("#fffff0"),
+            borderPadding=4, borderColor=colors.HexColor("#fde68a"),
+            borderWidth=0.5,
+        )
+        for i, snip in enumerate(snippets[:30]):
+            if len(snip) > 200:
+                snip = snip[:197] + "..."
+            story.append(Paragraph(
+                f'<font color="#d97706"><b>{i + 1}.</b></font> {snip}', snippet_style
+            ))
+            story.append(Spacer(1, 3))
+
+        if len(snippets) > 30:
+            story.append(Paragraph(
+                f'<font size="8" color="#a0aec0">... and {len(snippets) - 30} more.</font>',
+                base["Normal"],
+            ))
+
+    # Disclaimer
+    story.append(Spacer(1, 16))
+    story.append(HRFlowable(width=W, thickness=0.5, color=BORDER_CLR, spaceAfter=8))
+    story.append(Paragraph(
+        "This report was generated by NSU PlagiChecker. It compares two documents word-by-word "
+        "and highlights extra text found in the suspect document. Results should be reviewed "
+        "by an instructor before any action is taken.",
+        ParagraphStyle("disc", fontSize=7.5, fontName="Helvetica",
+                       textColor=TEXT_LIGHT, leading=11, alignment=TA_JUSTIFY),
+    ))
+
+    doc.build(story, canvasmaker=_NumberedCanvas)
+    return output_path
+
+
 def generate_turnitin_report(data: Dict[str, Any], output_path: str) -> str:
     """
     Public API: Generate the downloadable similarity report.

@@ -25,25 +25,28 @@ function MainApp() {
     [user?.id, user?.role]
   );
 
-  // Students default to 'diff' mode, others default to 'repo'
-  const [appMode, setAppMode] = useState(user?.role === 'student' ? 'diff' : 'repo');
+  const [appMode, setAppMode] = useState('repo');
   const [analysisResult, setAnalysisResult] = useState(null);
   const [uploadedFile, setUploadedFile] = useState(null);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [addRepoAnalyzing, setAddRepoAnalyzing] = useState(false);
   const [addRepoJobId, setAddRepoJobId] = useState(null);
   const [pastDocsRefresh, setPastDocsRefresh] = useState(0);
   const [checkAnalyzing, setCheckAnalyzing] = useState(false);
   const [checkJobId, setCheckJobId] = useState(null);
   const [diffData, setDiffData] = useState(null);
-  // Compare against: array of selected repositories ['university', 'personal']
+  const [diffAnalyzing, setDiffAnalyzing] = useState(false);
+  const [diffJobId, setDiffJobId] = useState(null);
+  const [diffSuspectFile, setDiffSuspectFile] = useState(null);
   const [compareAgainst, setCompareAgainst] = useState(user?.role === 'teacher' ? ['personal'] : ['university']);
   const [checkDragActive, setCheckDragActive] = useState(false);
   const [stateHydrated, setStateHydrated] = useState(false);
   const [processingFile, setProcessingFile] = useState(null);
+  const [resultJobId, setResultJobId] = useState(null);
+  const [diffResultJobId, setDiffResultJobId] = useState(null);
+  const [restoring, setRestoring] = useState(false);
 
   useEffect(() => {
-    const roleDefaultMode = user?.role === 'student' ? 'diff' : 'repo';
+    const roleDefaultMode = 'repo';
     const roleDefaultCompareAgainst = user?.role === 'teacher' ? ['personal'] : ['university'];
 
     setAppMode(roleDefaultMode);
@@ -51,25 +54,75 @@ function MainApp() {
     setAnalysisResult(null);
     setUploadedFile(null);
     setDiffData(null);
+    setResultJobId(null);
+    setDiffResultJobId(null);
 
     if (!storageKey) {
       setStateHydrated(true);
       return;
     }
 
+    const fetchJobs = [];
+
     try {
       const raw = localStorage.getItem(storageKey);
       if (raw) {
         const saved = JSON.parse(raw);
-        const allowedModes = user?.role === 'student' ? ['diff'] : ['repo', 'manage-repo', 'diff'];
+        const allowedModes = user?.role === 'student' ? ['repo', 'diff'] : ['repo', 'manage-repo', 'diff'];
         if (allowedModes.includes(saved?.appMode)) setAppMode(saved.appMode);
-        if (saved?.analysisResult && typeof saved.analysisResult === 'object') setAnalysisResult(saved.analysisResult);
-        if (saved?.diffData && typeof saved.diffData === 'object') setDiffData(saved.diffData);
         if (saved?.compareAgainst) setCompareAgainst(saved.compareAgainst);
+
+        if (saved?.addRepoJobId) {
+          setAddRepoJobId(saved.addRepoJobId);
+          setAddRepoAnalyzing(true);
+        }
+
+        // Restore plagiarism check result
+        if (saved?.checkJobId) {
+          setCheckJobId(saved.checkJobId);
+          setCheckAnalyzing(true);
+        } else if (saved?.resultJobId) {
+          setResultJobId(saved.resultJobId);
+          let cached = null;
+          try { cached = JSON.parse(localStorage.getItem(`${storageKey}:result`)); } catch {}
+          if (cached && typeof cached === 'object') {
+            setAnalysisResult(cached);
+          } else {
+            fetchJobs.push(
+              axios.get(`http://localhost:8000/analyze/result/${saved.resultJobId}`)
+                .then(res => setAnalysisResult(res.data))
+                .catch(() => setResultJobId(null))
+            );
+          }
+        }
+
+        // Restore comparison result
+        if (saved?.diffJobId) {
+          setDiffJobId(saved.diffJobId);
+          setDiffAnalyzing(true);
+        } else if (saved?.diffResultJobId) {
+          setDiffResultJobId(saved.diffResultJobId);
+          let cached = null;
+          try { cached = JSON.parse(localStorage.getItem(`${storageKey}:diff`)); } catch {}
+          if (cached && typeof cached === 'object') {
+            setDiffData(cached);
+          } else {
+            fetchJobs.push(
+              axios.get(`http://localhost:8000/analyze/result/${saved.diffResultJobId}`)
+                .then(res => setDiffData(res.data))
+                .catch(() => setDiffResultJobId(null))
+            );
+          }
+        }
       }
     } catch (err) {
       console.warn('Failed to restore UI state after refresh:', err);
-    } finally {
+    }
+
+    if (fetchJobs.length > 0) {
+      setRestoring(true);
+      Promise.all(fetchJobs).finally(() => { setRestoring(false); setStateHydrated(true); });
+    } else {
       setStateHydrated(true);
     }
   }, [storageKey, user?.role]);
@@ -82,14 +135,28 @@ function MainApp() {
         JSON.stringify({
           appMode,
           compareAgainst,
-          analysisResult,
-          diffData,
+          resultJobId,
+          diffResultJobId,
+          checkJobId: checkAnalyzing ? checkJobId : null,
+          addRepoJobId: addRepoAnalyzing ? addRepoJobId : null,
+          diffJobId: diffAnalyzing ? diffJobId : null,
         })
       );
     } catch (err) {
-      console.warn('Failed to persist UI state:', err);
+      console.warn('Failed to persist core state:', err);
     }
-  }, [stateHydrated, storageKey, appMode, compareAgainst, analysisResult, diffData]);
+    // Large result data in separate keys (may exceed quota — that's ok, backend re-fetch covers it)
+    const rKey = `${storageKey}:result`;
+    const dKey = `${storageKey}:diff`;
+    try {
+      if (analysisResult) localStorage.setItem(rKey, JSON.stringify(analysisResult));
+      else localStorage.removeItem(rKey);
+    } catch {}
+    try {
+      if (diffData) localStorage.setItem(dKey, JSON.stringify(diffData));
+      else localStorage.removeItem(dKey);
+    } catch {}
+  }, [stateHydrated, storageKey, appMode, compareAgainst, analysisResult, diffData, resultJobId, diffResultJobId, checkJobId, checkAnalyzing, addRepoJobId, addRepoAnalyzing, diffJobId, diffAnalyzing]);
 
   // Add to repository: kick off SSE job, show ReportView on complete
   const handleFileUpload = async (file) => {
@@ -165,6 +232,7 @@ function MainApp() {
   };
 
   const handleCheckComplete = (result) => {
+    setResultJobId(checkJobId);
     setAnalysisResult(result);
     setCheckAnalyzing(false);
     setCheckJobId(null);
@@ -172,7 +240,8 @@ function MainApp() {
   };
 
   const handleComparison = async (sourceFile, targetFile) => {
-    setIsAnalyzing(true);
+    setDiffSuspectFile(targetFile);
+    setDiffAnalyzing(true);
     const formData = new FormData();
     formData.append('source_file', sourceFile);
     formData.append('target_file', targetFile);
@@ -180,29 +249,44 @@ function MainApp() {
       const response = await axios.post('http://localhost:8000/compare', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
-      setDiffData(response.data);
+      setDiffJobId(response.data.job_id);
     } catch (error) {
       console.error("Error comparing docs:", error);
-      alert("Failed to compare documents.");
-    } finally {
-      setIsAnalyzing(false);
+      const msg = error.response?.data?.detail || error.message || "Backend not reachable.";
+      alert("Failed to compare documents. " + msg);
+      setDiffAnalyzing(false);
     }
+  };
+
+  const handleDiffComplete = (result) => {
+    setDiffResultJobId(diffJobId);
+    setDiffData(result);
+    setDiffAnalyzing(false);
+    setDiffJobId(null);
   };
 
   const resetApp = () => {
     setAnalysisResult(null);
     setUploadedFile(null);
     setDiffData(null);
-    setIsAnalyzing(false);
+    setDiffAnalyzing(false);
+    setDiffJobId(null);
+    setDiffSuspectFile(null);
     setAddRepoAnalyzing(false);
     setAddRepoJobId(null);
     setCheckAnalyzing(false);
     setCheckJobId(null);
     setProcessingFile(null);
+    setResultJobId(null);
+    setDiffResultJobId(null);
   };
 
   const handleLogout = () => {
-    if (storageKey) localStorage.removeItem(storageKey);
+    if (storageKey) {
+      localStorage.removeItem(storageKey);
+      localStorage.removeItem(`${storageKey}:result`);
+      localStorage.removeItem(`${storageKey}:diff`);
+    }
     logout();
     navigate('/');
   };
@@ -223,11 +307,10 @@ function MainApp() {
             <img src="/logo.svg" alt="NSU PlagiChecker" className="h-12 w-auto object-contain hover:opacity-90 transition-opacity" />
           </Link>
 
-          {/* Prominent Mode Toggle for Teachers/Admins - NOW IN NAVBAR */}
-          {user?.role !== 'student' && (
-            <div className="hidden lg:flex p-1.5 bg-white/40 backdrop-blur-xl rounded-[2rem] border border-white/60 shadow-xl shadow-slate-200/40 relative">
-              <AnimatePresence mode="wait">
-                {['repo', 'manage-repo', 'diff'].map((mode) => (
+          {/* Mode Toggle Navbar */}
+          <div className="hidden lg:flex p-1.5 bg-white/40 backdrop-blur-xl rounded-[2rem] border border-white/60 shadow-xl shadow-slate-200/40 relative">
+            <AnimatePresence mode="wait">
+              {(user?.role === 'student' ? ['repo', 'diff'] : ['repo', 'manage-repo', 'diff']).map((mode) => (
                   <button
                     key={mode}
                     onClick={() => { setAppMode(mode); resetApp(); }}
@@ -254,7 +337,6 @@ function MainApp() {
                 ))}
               </AnimatePresence>
             </div>
-          )}
 
           <div className="flex items-center gap-3">
             <div className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-sm font-semibold ${roleBadgeColor}`}>
@@ -273,20 +355,21 @@ function MainApp() {
       </div>
 
       <main className="flex-1 flex flex-col relative z-10 w-full px-6 lg:px-10 py-6">
-        {/* Student Label */}
-        {user?.role === 'student' && (
-          <div className="text-center mb-8">
-            <div className="inline-flex items-center gap-2 px-4 py-2 bg-brand-50 rounded-2xl border border-brand-100 shadow-sm">
-              <div className="w-2 h-2 rounded-full bg-brand-500 animate-pulse"></div>
-              <span className="text-sm font-black text-brand-700 uppercase tracking-widest">Document Comparison Tool</span>
-            </div>
-          </div>
-        )}
 
         {/* CONDITIONAL CONTENT RENDERING */}
         <div className="flex-1 flex flex-col">
+
+          {restoring && (
+            <div className="flex-1 flex items-center justify-center">
+              <div className="flex flex-col items-center gap-4">
+                <div className="w-12 h-12 border-4 border-slate-200 border-t-teal-500 rounded-full animate-spin" />
+                <p className="text-sm font-semibold text-slate-500">Restoring your results…</p>
+              </div>
+            </div>
+          )}
+
           {/* 1. Repository Check Mode */}
-          {appMode === 'repo' && user?.role !== 'student' && (
+          {!restoring && appMode === 'repo' && (
             <>
               {!analysisResult ? (
                 <div className="w-full">
@@ -367,8 +450,8 @@ function MainApp() {
                                 </div>
                                 <FolderOpen className={`w-5 h-5 shrink-0 transition-colors ${compareAgainst.includes('personal') ? 'text-teal-500' : 'text-slate-400'}`} />
                                 <div>
-                                  <span className={`font-black text-base block ${compareAgainst.includes('personal') ? 'text-teal-700' : 'text-slate-600'}`}>My Repository</span>
-                                  <span className={`text-xs font-medium ${compareAgainst.includes('personal') ? 'text-teal-600/70' : 'text-slate-400'}`}>Your personal uploads</span>
+                                <span className={`font-black text-base block ${compareAgainst.includes('personal') ? 'text-teal-700' : 'text-slate-600'}`}>Teacher Repo</span>
+                                <span className={`text-xs font-medium ${compareAgainst.includes('personal') ? 'text-teal-600/70' : 'text-slate-400'}`}>Your personal uploads</span>
                                 </div>
                               </button>
                             )}
@@ -427,7 +510,7 @@ function MainApp() {
           )}
 
           {/* 2. Manage Repository Mode */}
-          {appMode === 'manage-repo' && user?.role !== 'student' && (
+          {!restoring && appMode === 'manage-repo' && user?.role !== 'student' && (
             <div className="w-full">
               <motion.div initial={{ opacity: 0, y: 18 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.6 }} className="text-center mb-10">
                 <h2 className="text-3xl font-bold text-slate-900">Repository Management</h2>
@@ -458,26 +541,21 @@ function MainApp() {
           )}
 
           {/* 3. Diff Checker Mode */}
-          {appMode === 'diff' && (
+          {!restoring && appMode === 'diff' && (
             <div className="w-full flex-1 flex flex-col">
               {!diffData ? (
-                <ComparisonUpload onCompare={handleComparison} isAnalyzing={isAnalyzing} />
+                <ComparisonUpload
+                  onCompare={handleComparison}
+                  isAnalyzing={diffAnalyzing}
+                  jobId={diffJobId}
+                  onComplete={handleDiffComplete}
+                />
               ) : (
-                <ComparisonView data={diffData} onReset={resetApp} />
+                <ComparisonView data={diffData} suspectFile={diffSuspectFile} onReset={resetApp} />
               )}
             </div>
           )}
 
-          {/* 4. Access Denied (Student in Repo Mode) */}
-          {appMode === 'repo' && user?.role === 'student' && (
-            <div className="flex-1 flex flex-col items-center justify-center text-center p-12 bg-white rounded-3xl border border-slate-200 shadow-sm mx-auto max-w-2xl my-auto">
-              <div className="w-20 h-20 bg-red-50 text-red-500 rounded-full flex items-center justify-center mb-6">
-                <ShieldCheck className="w-10 h-10" />
-              </div>
-              <h2 className="text-2xl font-bold text-slate-800 mb-2">Access Restricted</h2>
-              <p className="text-slate-500">Students are only permitted to use the Document Comparison tool.</p>
-            </div>
-          )}
         </div>
       </main >
 

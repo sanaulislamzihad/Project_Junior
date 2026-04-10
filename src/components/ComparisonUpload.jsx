@@ -2,6 +2,7 @@ import React, { useCallback, useState } from 'react';
 import { Upload, FileText, ArrowRightLeft, Check, X, FileUp, Sparkles } from 'lucide-react';
 import { useDropzone } from 'react-dropzone';
 import { motion, AnimatePresence } from 'framer-motion';
+import AnalyzingProgress from './AnalyzingProgress';
 
 const SingleUploadBox = ({ label, file, setFile, disabled }) => {
     const onDrop = useCallback(acceptedFiles => {
@@ -10,10 +11,7 @@ const SingleUploadBox = ({ label, file, setFile, disabled }) => {
 
     const { getRootProps, getInputProps, isDragActive } = useDropzone({
         onDrop,
-        accept: {
-            'application/pdf': ['.pdf'],
-            'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['.pptx']
-        },
+        accept: { 'application/pdf': ['.pdf'] },
         maxFiles: 1,
         disabled: disabled || !!file
     });
@@ -47,7 +45,7 @@ const SingleUploadBox = ({ label, file, setFile, disabled }) => {
                             </div>
                         </div>
                         <p className="text-base font-bold text-slate-700">Select Document</p>
-                        <p className="text-xs font-semibold text-slate-400 mt-1 uppercase tracking-wider">PDF or PPTX</p>
+                        <p className="text-xs font-semibold text-slate-400 mt-1 uppercase tracking-wider">PDF</p>
                     </motion.div>
                 ) : (
                     <motion.div
@@ -55,7 +53,6 @@ const SingleUploadBox = ({ label, file, setFile, disabled }) => {
                         animate={{ opacity: 1, scale: 1 }}
                         className="h-64 border border-slate-200/60 rounded-[2.5rem] bg-white/80 backdrop-blur-xl flex flex-col items-center justify-center relative overflow-hidden shadow-xl"
                     >
-                        {/* Background Decor */}
                         <div className="absolute top-0 right-0 w-32 h-32 bg-brand-50/50 rounded-bl-full -mr-16 -mt-16 blur-2xl"></div>
 
                         <button
@@ -97,7 +94,7 @@ const SingleUploadBox = ({ label, file, setFile, disabled }) => {
     );
 };
 
-const ComparisonUpload = ({ onCompare, isAnalyzing }) => {
+const ComparisonUpload = ({ onCompare, isAnalyzing, jobId, onComplete }) => {
     const [sourceFile, setSourceFile] = useState(null);
     const [targetFile, setTargetFile] = useState(null);
 
@@ -109,7 +106,6 @@ const ComparisonUpload = ({ onCompare, isAnalyzing }) => {
 
     return (
         <div className="w-full max-w-6xl mx-auto p-4 flex flex-col min-h-[75vh] justify-center relative">
-            {/* Background elements */}
             <div className="absolute top-0 left-1/4 w-96 h-96 bg-brand-200/10 rounded-full blur-[120px] -z-10 animate-pulse"></div>
             <div className="absolute bottom-0 right-1/4 w-96 h-96 bg-teal-200/10 rounded-full blur-[120px] -z-10 animate-pulse" style={{ animationDelay: '2s' }}></div>
 
@@ -122,69 +118,81 @@ const ComparisonUpload = ({ onCompare, isAnalyzing }) => {
                     Diff <span className="text-brand-500">Checker</span>
                 </h2>
                 <p className="text-slate-500 max-w-2xl mx-auto text-lg font-medium leading-relaxed">
-                    Compare two specific documents with pinpoint accuracy. Perfect for <span className="text-brand-600">side-by-side</span> similarity verification.
+                    Compare two documents with pinpoint accuracy. Extra text in the suspect document will be <span className="text-amber-500 font-bold">highlighted in yellow</span>.
                 </p>
             </header>
 
             <div className="bg-white/40 backdrop-blur-2xl rounded-[3rem] shadow-[0_20px_50px_rgba(0,0,0,0.05)] border border-white/60 p-8 md:p-12 relative overflow-hidden">
-                {/* Visual accents */}
                 <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-brand-500/20 to-transparent"></div>
 
-                <div className="flex flex-col md:flex-row gap-10 items-center relative z-10">
-                    {/* Left: Source */}
-                    <SingleUploadBox
-                        label="Source Document"
-                        file={sourceFile}
-                        setFile={setSourceFile}
-                        disabled={isAnalyzing}
-                    />
+                <AnimatePresence mode="wait">
+                    {isAnalyzing && jobId ? (
+                        <motion.div
+                            key="analyzing"
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: -10 }}
+                            className="flex items-center justify-center py-20"
+                        >
+                            <AnalyzingProgress
+                                jobId={jobId}
+                                onComplete={onComplete}
+                                title="Comparing Documents..."
+                                subtitle="Finding extra text in suspect document"
+                            />
+                        </motion.div>
+                    ) : (
+                        <motion.div
+                            key="upload"
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            exit={{ opacity: 0, y: -10 }}
+                        >
+                            <div className="flex flex-col md:flex-row gap-10 items-center relative z-10">
+                                <SingleUploadBox
+                                    label="Source Document"
+                                    file={sourceFile}
+                                    setFile={setSourceFile}
+                                    disabled={isAnalyzing}
+                                />
 
-                    {/* Divider / Action */}
-                    <div className="flex flex-col items-center gap-4 py-4">
-                        <div className="w-12 h-12 rounded-full bg-white border border-slate-100 shadow-lg flex items-center justify-center text-brand-600 relative group transition-all duration-500 hover:rotate-180">
-                            <ArrowRightLeft size={22} className="stroke-[2.5px]" />
-                            <div className="absolute -inset-2 bg-brand-400/20 rounded-full blur-lg opacity-0 group-hover:opacity-100 transition-opacity"></div>
-                        </div>
-                    </div>
+                                <div className="flex flex-col items-center gap-4 py-4">
+                                    <div className="w-12 h-12 rounded-full bg-white border border-slate-100 shadow-lg flex items-center justify-center text-brand-600 relative group transition-all duration-500 hover:rotate-180">
+                                        <ArrowRightLeft size={22} className="stroke-[2.5px]" />
+                                        <div className="absolute -inset-2 bg-brand-400/20 rounded-full blur-lg opacity-0 group-hover:opacity-100 transition-opacity"></div>
+                                    </div>
+                                </div>
 
-                    {/* Right: Target */}
-                    <SingleUploadBox
-                        label="Suspect Document"
-                        file={targetFile}
-                        setFile={setTargetFile}
-                        disabled={isAnalyzing}
-                    />
-                </div>
+                                <SingleUploadBox
+                                    label="Suspect Document"
+                                    file={targetFile}
+                                    setFile={setTargetFile}
+                                    disabled={isAnalyzing}
+                                />
+                            </div>
 
-                <div className="mt-12 flex justify-center">
-                    <motion.button
-                        whileHover={{ scale: 1.03, translateY: -2 }}
-                        whileTap={{ scale: 0.98 }}
-                        onClick={handleCompare}
-                        disabled={!sourceFile || !targetFile || isAnalyzing}
-                        className={`
-                            relative group overflow-hidden px-10 py-5 rounded-[2rem] font-black text-xl shadow-2xl transition-all duration-300 flex items-center gap-4
-                            ${sourceFile && targetFile && !isAnalyzing
-                                ? 'bg-slate-900 text-white shadow-teal-500/10'
-                                : 'bg-slate-100 text-slate-400 cursor-not-allowed shadow-none'
-                            }
-                        `}
-                    >
-                        {isAnalyzing ? (
-                            <>
-                                <div className="w-6 h-6 border-3 border-white/20 border-t-white rounded-full animate-spin" />
-                                <span className="tracking-tight italic opacity-90 font-medium">Analyzing...</span>
-                            </>
-                        ) : (
-                            <>
-                                <span className="relative z-10">Start Comparison</span>
-                                <ArrowRightLeft size={22} className="relative z-10 stroke-[3px]" />
-                                {/* Hover Gradient Background */}
-                                <div className="absolute inset-0 bg-gradient-to-r from-brand-600 to-teal-500 opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
-                            </>
-                        )}
-                    </motion.button>
-                </div>
+                            <div className="mt-12 flex justify-center">
+                                <motion.button
+                                    whileHover={{ scale: 1.03, translateY: -2 }}
+                                    whileTap={{ scale: 0.98 }}
+                                    onClick={handleCompare}
+                                    disabled={!sourceFile || !targetFile || isAnalyzing}
+                                    className={`
+                                        relative group overflow-hidden px-10 py-5 rounded-[2rem] font-black text-xl shadow-2xl transition-all duration-300 flex items-center gap-4
+                                        ${sourceFile && targetFile && !isAnalyzing
+                                            ? 'bg-slate-900 text-white shadow-teal-500/10'
+                                            : 'bg-slate-100 text-slate-400 cursor-not-allowed shadow-none'
+                                        }
+                                    `}
+                                >
+                                    <span className="relative z-10">Start Comparison</span>
+                                    <ArrowRightLeft size={22} className="relative z-10 stroke-[3px]" />
+                                    <div className="absolute inset-0 bg-gradient-to-r from-brand-600 to-teal-500 opacity-0 group-hover:opacity-100 transition-opacity duration-300"></div>
+                                </motion.button>
+                            </div>
+                        </motion.div>
+                    )}
+                </AnimatePresence>
             </div>
 
             <footer className="mt-8 text-center">

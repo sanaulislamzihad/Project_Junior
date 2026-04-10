@@ -25,6 +25,7 @@ const AdminDashboard = () => {
     const [formSuccess, setFormSuccess] = useState('');
     const [actionLoading, setActionLoading] = useState(false);
     const [addRepoAnalyzing, setAddRepoAnalyzing] = useState(false);
+    const [addRepoJobId, setAddRepoJobId] = useState(null);
     const [pastDocsRefresh, setPastDocsRefresh] = useState(0);
 
     useEffect(() => {
@@ -86,18 +87,24 @@ const AdminDashboard = () => {
         formData.append('filename_override', file.name || '');
         formData.append('repo_type', 'university');
         formData.append('role', 'admin');
+        formData.append('add_to_repo', 'true');
         try {
-            await axios.post('http://localhost:8000/analyze', formData, {
+            const response = await axios.post('http://localhost:8000/analyze', formData, {
                 headers: { 'Content-Type': 'multipart/form-data' },
             });
-            setPastDocsRefresh((n) => n + 1);
+            setAddRepoJobId(response.data.job_id);
         } catch (error) {
             console.error("Error adding document:", error);
             const msg = error.response?.data?.detail || error.message || "Backend not reachable.";
             alert("Failed to add document. " + msg);
-        } finally {
             setAddRepoAnalyzing(false);
         }
+    };
+
+    const handleAddRepoComplete = () => {
+        setPastDocsRefresh((n) => n + 1);
+        setAddRepoAnalyzing(false);
+        setAddRepoJobId(null);
     };
 
     const handleRemoveUser = async (userId, userName) => {
@@ -426,7 +433,7 @@ const AdminDashboard = () => {
                                         </div>
                                     </div>
                                     <div className="p-6">
-                                        <UploadZone onUpload={handleUniversityUpload} isAnalyzing={addRepoAnalyzing} user={user} showHero={false} title="Quick Upload" description="Drag & drop your files here" loadingLabel="Indexing..." loadingSubLabel="Adding to global database" />
+                                        <UploadZone onUpload={handleUniversityUpload} isAnalyzing={addRepoAnalyzing} jobId={addRepoJobId} onComplete={handleAddRepoComplete} user={user} showHero={false} title="Quick Upload" description="Drag & drop your files here" loadingLabel="Indexing..." loadingSubLabel="Adding to global database" />
                                     </div>
                                 </motion.div>
                             </div>

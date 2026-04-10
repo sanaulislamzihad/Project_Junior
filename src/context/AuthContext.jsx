@@ -23,8 +23,9 @@ export function AuthProvider({ children }) {
         try {
             const data = await loginUser(email, password, role);
             if (data.success) {
-                setUser(data.user);
-                return { success: true, user: data.user };
+                const userData = { ...data.user, token: data.token };
+                setUser(userData);
+                return { success: true, user: userData };
             }
             return { success: false, error: 'Invalid response from server' };
         } catch (error) {

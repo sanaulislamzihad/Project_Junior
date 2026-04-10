@@ -16,6 +16,7 @@ const OVERLAY_COLORS = [
     { bg: 'rgba(236, 72, 153, 0.22)', border: 'rgba(236, 72, 153, 0.40)', badge: '#ec4899' },
     { bg: 'rgba(99, 102, 241, 0.22)', border: 'rgba(99, 102, 241, 0.40)', badge: '#6366f1' },
     { bg: 'rgba(20, 184, 166, 0.22)', border: 'rgba(20, 184, 166, 0.40)', badge: '#14b8a6' },
+    { bg: 'rgba(250, 204, 21, 0.35)', border: 'rgba(234, 179, 8, 0.50)', badge: '#eab308' },
 ];
 
 const PdfViewer = ({ file, showTextLayer = false, interactiveHighlights = [], onHighlightClick = null }) => {
@@ -162,7 +163,7 @@ const PdfViewer = ({ file, showTextLayer = false, interactiveHighlights = [], on
                                                         />
                                                     );
                                                 })}
-                                                {regions.length > 0 && matchIndices.length > 0 && (() => {
+                                                {regions.length > 0 && matchIndices.length > 0 && fileNames.length > 0 && (() => {
                                                     const [x0, y0] = regions[0] || [0, 0];
                                                     const maxVisible = 3;
                                                     const visible = matchIndices.slice(0, maxVisible);
