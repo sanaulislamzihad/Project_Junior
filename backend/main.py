@@ -23,7 +23,7 @@ from text_pipeline import (
     DocumentMetadata,
     light_clean_preserve_newlines,
 )
-from document_store import save_document, list_documents, delete_document, get_stats, get_chunks_for_scan, get_chunks_with_embeddings, DB_PATH
+from document_store import save_document, list_documents, delete_document, update_document_path, get_stats, get_chunks_for_scan, get_chunks_with_embeddings, DB_PATH
 from embedding_pipeline import encode_chunks, find_matches, extract_top_similar_sentences
 from faiss_index import invalidate_cached_index
 from diff_checker import compute_comparison
@@ -308,6 +308,21 @@ def documents_delete(document_id: str, repo_type: str = "university", owner_id: 
     if not success:
         raise HTTPException(status_code=500, detail="Failed to delete document.")
     invalidate_cached_index(repo_type, owner_id)
+    return {"success": True}
+
+class MoveDocumentRequest(BaseModel):
+    new_path: str
+
+@app.put("/documents/{document_id}/move")
+def documents_move(document_id: str, req: MoveDocumentRequest, repo_type: str = "university", owner_id: int = None):
+    """Move a document to a different virtual folder path."""
+    docs = list_documents(repo_type=repo_type, owner_id=owner_id)
+    doc_ids = {d["document_id"] for d in docs}
+    if document_id not in doc_ids:
+        raise HTTPException(status_code=404, detail="Document not found or access denied.")
+    success = update_document_path(document_id, req.new_path, repo_type, owner_id)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to move document.")
     return {"success": True}
 
 

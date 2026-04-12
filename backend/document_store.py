@@ -280,3 +280,18 @@ def delete_document(document_id: str, db_path: str = DB_PATH) -> bool:
         return exists
     finally:
         conn.close()
+
+def update_document_path(document_id: str, new_path: str, repo_type: str = "university", owner_id: int = None, db_path: str = DB_PATH) -> bool:
+    """Update the file_name (path) of a document. Returns True if updated."""
+    init_db(db_path)
+    conn = get_connection(db_path)
+    cursor = conn.cursor()
+    try:
+        if repo_type == "personal" and owner_id is not None:
+            cursor.execute("UPDATE documents SET file_name = ? WHERE document_id = ? AND repo_type = ? AND owner_id = ?", (new_path, document_id, repo_type, owner_id))
+        else:
+            cursor.execute("UPDATE documents SET file_name = ? WHERE document_id = ? AND repo_type = 'university'", (new_path, document_id))
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()

@@ -1,12 +1,14 @@
 import React, { useCallback, useState } from 'react';
-import { Upload, FileText, AlertCircle, Check } from 'lucide-react';
+import { Upload, FileText, AlertCircle, Check, FolderPlus, ArrowRight, Folder } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import AnalyzingProgress from './AnalyzingProgress';
 
 const UploadZone = ({ onUpload, isAnalyzing, jobId, onComplete, user, showHero = true, title = 'Upload your Document', description = 'Drag & drop or browse files', loadingLabel = 'Analyzing Document...', loadingSubLabel = 'Cross-checking against repository...' }) => {
     const [dragActive, setDragActive] = useState(false);
-    const [currentFile, setCurrentFile] = useState(null);
     const [error, setError] = useState(null);
+    const [stagedFiles, setStagedFiles] = useState([]);
+    const [destinationPath, setDestinationPath] = useState('');
+    
     const repoLabel = user?.role === 'admin' ? 'Whole University repository' : 'My repository (personal)';
 
     const handleDrag = useCallback((e) => {
@@ -19,39 +21,109 @@ const UploadZone = ({ onUpload, isAnalyzing, jobId, onComplete, user, showHero =
         }
     }, []);
 
-    const handleDrop = useCallback((e) => {
+    const getFilesFromDataTransferItems = async (items) => {
+        const files = [];
+        const queue = [];
+        for (let i = 0; i < items.length; i++) {
+            if (items[i].webkitGetAsEntry) {
+                const entry = items[i].webkitGetAsEntry();
+                if (entry) queue.push(entry);
+            }
+        }
+
+        while (queue.length > 0) {
+            const entry = queue.shift();
+            if (entry.isFile) {
+                const file = await new Promise((resolve) => entry.file(resolve));
+                if (file.name.toLowerCase().endsWith('.pdf') || file.name.toLowerCase().endsWith('.pptx')) {
+                    const relativePath = entry.fullPath ? entry.fullPath.replace(/^\//, '') : file.name;
+                    try {
+                        Object.defineProperty(file, 'customPath', { value: relativePath, configurable: true, writable: true });
+                    } catch(e) {
+                        file.customPath = relativePath;
+                    }
+                    files.push(file);
+                }
+            } else if (entry.isDirectory) {
+                const dirReader = entry.createReader();
+                const readAllEntries = async () => {
+                    const entries = await new Promise((resolve) => dirReader.readEntries(resolve));
+                    if (entries.length > 0) {
+                        queue.push(...entries);
+                        await readAllEntries();
+                    }
+                };
+                await readAllEntries();
+            }
+        }
+        return files;
+    };
+
+    const handleDrop = useCallback(async (e) => {
         e.preventDefault();
         e.stopPropagation();
         setDragActive(false);
-        if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-            validateAndUpload(e.dataTransfer.files[0]);
+        
+        let files = [];
+        if (e.dataTransfer.items) {
+            files = await getFilesFromDataTransferItems(e.dataTransfer.items);
+        } else if (e.dataTransfer.files) {
+            files = Array.from(e.dataTransfer.files).filter(f => f.name.toLowerCase().endsWith('.pdf') || f.name.toLowerCase().endsWith('.pptx'));
         }
-    }, [onUpload]);
+
+        if (files.length > 0) {
+            setError(null);
+            setStagedFiles(files);
+        } else {
+            setError("No valid PDF or PPTX files found.");
+        }
+    }, []);
 
     const handleChange = (e) => {
         e.preventDefault();
-        if (e.target.files && e.target.files[0]) {
-            validateAndUpload(e.target.files[0]);
+        const files = Array.from(e.target.files || []).filter(f => f.name.toLowerCase().endsWith('.pdf') || f.name.toLowerCase().endsWith('.pptx'));
+        if (files.length > 0) {
+            setError(null);
+            setStagedFiles(files);
+        } else {
+            setError("No valid PDF or PPTX files found.");
         }
+        e.target.value = '';
     };
 
-    const validateAndUpload = (file) => {
-        const isPdf = file.name.toLowerCase().endsWith('.pdf');
-        const isPptx = file.name.toLowerCase().endsWith('.pptx');
+    const confirmUpload = () => {
+        if (stagedFiles.length === 0) return;
+        
+        const finalFiles = stagedFiles.map(file => {
+            let nameToUse = file.customPath || file.webkitRelativePath || file.name;
+            const dest = destinationPath.trim().replace(/^\/+|\/+$/g, '');
+            
+            if (dest) {
+                const finalPath = `${dest}/${nameToUse}`;
+                try {
+                    Object.defineProperty(file, 'customPath', { value: finalPath, configurable: true });
+                } catch (e) {
+                    file.customPath = finalPath;
+                }
+            } else {
+                try {
+                    Object.defineProperty(file, 'customPath', { value: nameToUse, configurable: true });
+                } catch (e) {
+                    file.customPath = nameToUse;
+                }
+            }
+            return file;
+        });
 
-        if (!isPdf && !isPptx) {
-            setError("Please upload a PDF or PPTX file.");
-            return;
-        }
-        setError(null);
-        setCurrentFile(file);
-        onUpload(file);
+        const filesToUpload = [...finalFiles];
+        setStagedFiles([]);
+        setDestinationPath('');
+        onUpload(filesToUpload);
     };
 
     return (
         <div className="flex flex-col items-center justify-center p-1 w-full mx-auto my-auto" style={showHero ? { minHeight: '80vh' } : undefined}>
 
-            {/* Hero Text - hidden when showHero=false (Add to repository) */}
             {showHero && (
                 <motion.div
                     initial={{ opacity: 0, y: 20 }}
@@ -82,53 +154,112 @@ const UploadZone = ({ onUpload, isAnalyzing, jobId, onComplete, user, showHero =
                 </motion.div>
             )}
 
-            {/* Upload Card */}
             <motion.div
                 initial={{ opacity: 0, scale: 0.95 }}
                 animate={{ opacity: 1, scale: 1 }}
                 transition={{ delay: 0.2, duration: 0.6 }}
                 className="w-full max-w-2xl relative"
             >
-                {/* Soft Shadow/Glow Effect behind card */}
                 <div className="absolute -inset-4 bg-gradient-to-r from-teal-200 to-emerald-200 rounded-[2rem] blur-xl opacity-40"></div>
 
-                <div className="glass-panel p-8 relative bg-white/80 backdrop-blur-xl border border-white/50 shadow-xl">
-                    <form
-                        onDragEnter={handleDrag}
-                        onDragLeave={handleDrag}
-                        onDragOver={handleDrag}
-                        onDrop={handleDrop}
-                        className="w-full"
-                    >
-                        <input
-                            type="file"
-                            id="file-upload"
-                            style={{ display: 'none' }}
-                            onChange={handleChange}
-                            accept=".pdf,.pptx"
-                            disabled={isAnalyzing}
-                        />
+                <div className="glass-panel p-8 relative bg-white/80 backdrop-blur-xl border border-white/50 shadow-xl overflow-hidden min-h-[320px] flex items-center justify-center">
+                    
+                    <AnimatePresence mode="wait">
+                        {stagedFiles.length > 0 ? (
+                            <motion.div
+                                key="staged-modal"
+                                initial={{ opacity: 0, scale: 0.95 }}
+                                animate={{ opacity: 1, scale: 1 }}
+                                exit={{ opacity: 0, scale: 0.95 }}
+                                className="w-full h-full flex flex-col bg-white"
+                            >
+                                <div className="flex items-center gap-3 mb-6">
+                                    <div className="w-12 h-12 rounded-xl bg-brand-100 text-brand-600 flex items-center justify-center shrink-0">
+                                        <FolderPlus className="w-6 h-6" />
+                                    </div>
+                                    <div>
+                                        <h3 className="text-xl font-bold text-slate-800 leading-tight">Destination Folder</h3>
+                                        <p className="text-sm font-medium text-slate-500">{stagedFiles.length} file{stagedFiles.length !== 1 ? 's' : ''} staged for upload</p>
+                                    </div>
+                                </div>
+                                
+                                <div className="mb-8 relative flex-1">
+                                    <label className="block text-sm font-bold text-slate-700 mb-2">Configure Repository Path</label>
+                                    <input 
+                                        type="text" 
+                                        autoFocus
+                                        placeholder="e.g. Submissions/Fall 2026/Exams" 
+                                        value={destinationPath}
+                                        onChange={(e) => setDestinationPath(e.target.value)}
+                                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-transparent transition-all"
+                                    />
+                                    <p className="text-xs text-slate-500 mt-3 flex items-start gap-1">
+                                        <ArrowRight className="w-3 h-3 mt-0.5 shrink-0" />
+                                        Leave this blank to upload the files exactly as they are without wrapping them in an overarching folder.
+                                    </p>
+                                </div>
 
-                        <label
-                            htmlFor="file-upload"
-                            className={`
-                            relative overflow-hidden group
-                            flex flex-col items-center justify-center 
-                            h-64 w-full rounded-3xl border-2 border-dashed 
-                            transition-all duration-300 ease-out cursor-pointer
-                            ${dragActive
-                                    ? 'border-brand-500 bg-brand-50/50 scale-[1.02] shadow-inner'
-                                    : 'border-slate-200 hover:border-brand-400 hover:bg-slate-50/50 hover:shadow-md'
-                                }
-                        `}
-                        >
+                                <div className="flex gap-3 mt-auto">
+                                    <button
+                                        type="button"
+                                        onClick={() => { setStagedFiles([]); setDestinationPath(''); }}
+                                        className="flex-[0.5] py-3 px-4 rounded-xl font-bold text-slate-600 hover:bg-slate-100 transition-colors"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={confirmUpload}
+                                        className="flex-1 py-3 px-4 bg-brand-600 hover:bg-brand-700 text-white rounded-xl font-bold transition-all shadow-sm hover:shadow active:scale-[0.98] flex justify-center items-center gap-2 tracking-wide"
+                                    >
+                                        Confirm & Upload to Queue
+                                    </button>
+                                </div>
+                            </motion.div>
+                        ) : isAnalyzing ? (
+                            <AnalyzingProgress jobId={jobId} onComplete={onComplete} title={loadingLabel} subtitle={loadingSubLabel} />
+                        ) : (
+                            <form
+                                key="idle-drop"
+                                onDragEnter={handleDrag}
+                                onDragLeave={handleDrag}
+                                onDragOver={handleDrag}
+                                onDrop={handleDrop}
+                                className="w-full h-full flex items-center justify-center"
+                            >
+                                <input
+                                    type="file"
+                                    id="file-upload"
+                                    multiple
+                                    style={{ display: 'none' }}
+                                    onChange={handleChange}
+                                    accept=".pdf,.pptx"
+                                    disabled={isAnalyzing}
+                                />
+                                <input
+                                    type="file"
+                                    id="folder-upload"
+                                    webkitdirectory="true"
+                                    directory="true"
+                                    multiple
+                                    style={{ display: 'none' }}
+                                    onChange={handleChange}
+                                    disabled={isAnalyzing}
+                                />
 
-                            <AnimatePresence mode="wait">
-                                {isAnalyzing ? (
-                                    <AnalyzingProgress jobId={jobId} onComplete={onComplete} title={loadingLabel} subtitle={loadingSubLabel} />
-                                ) : (
+                                <div
+                                    className={`
+                                        relative overflow-hidden group
+                                        flex flex-col items-center justify-center 
+                                        h-[280px] w-full rounded-3xl border-2 border-dashed flex-1
+                                        transition-all duration-300 ease-out 
+                                        ${dragActive
+                                            ? 'border-brand-500 bg-brand-50/50 scale-[1.02] shadow-inner'
+                                            : 'border-slate-200 hover:border-brand-400 hover:bg-slate-50/50 hover:shadow-md'
+                                        }
+                                    `}
+                                >
                                     <motion.div
-                                        key="idle"
                                         initial={{ opacity: 0, y: 10 }}
                                         animate={{ opacity: 1, y: 0 }}
                                         exit={{ opacity: 0, y: -10 }}
@@ -140,22 +271,41 @@ const UploadZone = ({ onUpload, isAnalyzing, jobId, onComplete, user, showHero =
                                         <h3 className="text-xl font-bold text-slate-800 mb-2">
                                             {title}
                                         </h3>
-                                        <p className="text-slate-500 text-sm font-medium">
-                                            {description.includes('browse') ? (
-                                                <>Drag & drop or <span className="text-brand-600 font-bold hover:underline underline-offset-4">browse files</span></>
-                                            ) : (
-                                                description
+                                        <div className="text-slate-500 text-sm font-medium z-20 flex flex-col items-center gap-1">
+                                            <p>
+                                                Drag & drop or 
+                                                <button 
+                                                    type="button"
+                                                    onClick={() => document.getElementById('file-upload').click()}
+                                                    className="text-brand-600 font-bold hover:underline underline-offset-4 ml-1"
+                                                >
+                                                    browse files
+                                                </button>
+                                            </p>
+                                            
+                                            {description.includes('browse') && (
+                                                <div className="flex items-center gap-1">
+                                                    <span className="text-slate-400 text-sm">or</span>
+                                                    <button 
+                                                        type="button" 
+                                                        onClick={() => document.getElementById('folder-upload').click()}
+                                                        className="text-brand-600 text-sm font-bold hover:underline underline-offset-4 inline-flex items-center gap-1"
+                                                    >
+                                                        <Folder className="w-3.5 h-3.5" /> browse directory folder
+                                                    </button>
+                                                </div>
                                             )}
-                                        </p>
-                                        <div className="mt-6 flex gap-4 text-xs text-slate-400 font-mono">
+                                        </div>
+                                        
+                                        <div className="mt-6 flex gap-4 text-xs text-slate-400 font-mono pointer-events-none">
                                             <span className="px-2 py-1 rounded bg-slate-50 border border-slate-200">PDF & PPTX</span>
                                             <span className="px-2 py-1 rounded bg-slate-50 border border-slate-200">MAX 10MB</span>
                                         </div>
                                     </motion.div>
-                                )}
-                            </AnimatePresence>
-                        </label>
-                    </form>
+                                </div>
+                            </form>
+                        )}
+                    </AnimatePresence>
                 </div>
             </motion.div>
 

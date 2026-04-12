@@ -9,7 +9,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
     ShieldCheck, Users, UserPlus, Trash2, Search,
     GraduationCap, User, LogOut, Mail, Lock, X, ChevronDown, Loader2,
-    Database, FolderOpen
+    Database, FolderOpen, Layers, FileText, CheckCircle, Upload
 } from 'lucide-react';
 
 const AdminDashboard = () => {
@@ -28,9 +28,67 @@ const AdminDashboard = () => {
     const [addRepoJobId, setAddRepoJobId] = useState(null);
     const [pastDocsRefresh, setPastDocsRefresh] = useState(0);
 
+    const storageKey = user?.id ? `plagichecker:adminapp:queue:${user.id}` : null;
+    const [adminQueue, setAdminQueue] = useState([]);
+    const [stateHydrated, setStateHydrated] = useState(false);
+
     useEffect(() => {
         refreshUsers();
-    }, []);
+        if (storageKey) {
+            try {
+                const raw = localStorage.getItem(storageKey);
+                if (raw) {
+                    const saved = JSON.parse(raw);
+                    if (saved.appMode && ['manage-users', 'manage-repo', 'queue'].includes(saved.appMode)) setAppMode(saved.appMode);
+                    if (saved.adminQueue) setAdminQueue(saved.adminQueue);
+                }
+            } catch(e) {}
+        }
+        setStateHydrated(true);
+    }, [storageKey]);
+
+    useEffect(() => {
+        if (!stateHydrated || !storageKey) return;
+        try {
+            localStorage.setItem(storageKey, JSON.stringify({ appMode, adminQueue }));
+        } catch(e) {}
+    }, [stateHydrated, storageKey, appMode, adminQueue]);
+
+    useEffect(() => {
+        if (adminQueue.length === 0) return;
+        
+        const allDone = adminQueue.every(item => item.status === 'completed' || item.status === 'error');
+        if (allDone) return;
+        
+        if (adminQueue.some(item => item.status === 'analyzing')) return;
+
+        const nextItemIndex = adminQueue.findIndex(item => item.status === 'pending');
+        if (nextItemIndex === -1) return;
+
+        const item = adminQueue[nextItemIndex];
+        const processNext = async () => {
+            setAdminQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'analyzing' } : i));
+            const formData = new FormData();
+            formData.append('file', item.file);
+            formData.append('filename_override', item.file.customPath || item.file.webkitRelativePath || item.file.name || '');
+            formData.append('repo_type', 'university');
+            formData.append('role', 'admin');
+            formData.append('add_to_repo', 'true');
+            if (user?.id) formData.append('user_id', String(user.id));
+            try {
+                await axios.post('http://localhost:8000/analyze', formData, {
+                    headers: { 'Content-Type': 'multipart/form-data' },
+                });
+                setAdminQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'completed' } : i));
+                setPastDocsRefresh(n => n + 1);
+            } catch (error) {
+                const msg = error.response?.data?.detail || error.message || "Backend not reachable.";
+                setAdminQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'error', error: msg } : i));
+            }
+        };
+
+        processNext();
+    }, [adminQueue, user?.id]);
 
     const refreshUsers = async () => {
         setLoading(true);
@@ -80,31 +138,20 @@ const AdminDashboard = () => {
         }
     };
 
-    const handleUniversityUpload = async (file) => {
-        setAddRepoAnalyzing(true);
-        const formData = new FormData();
-        formData.append('file', file);
-        formData.append('filename_override', file.name || '');
-        formData.append('repo_type', 'university');
-        formData.append('role', 'admin');
-        formData.append('add_to_repo', 'true');
-        try {
-            const response = await axios.post('http://localhost:8000/analyze', formData, {
-                headers: { 'Content-Type': 'multipart/form-data' },
-            });
-            setAddRepoJobId(response.data.job_id);
-        } catch (error) {
-            console.error("Error adding document:", error);
-            const msg = error.response?.data?.detail || error.message || "Backend not reachable.";
-            alert("Failed to add document. " + msg);
-            setAddRepoAnalyzing(false);
-        }
+    const handleUniversityUpload = (files) => {
+        if (!files || files.length === 0) return;
+        const newItems = files.map(file => ({
+            id: crypto.randomUUID(),
+            file,
+            status: 'pending',
+            error: null
+        }));
+        setAdminQueue(prev => [...prev, ...newItems]);
+        setAppMode('queue');
     };
 
     const handleAddRepoComplete = () => {
-        setPastDocsRefresh((n) => n + 1);
-        setAddRepoAnalyzing(false);
-        setAddRepoJobId(null);
+        // Handled via the queue effect implicitly now
     };
 
     const handleRemoveUser = async (userId, userName) => {
@@ -147,7 +194,7 @@ const AdminDashboard = () => {
                     {/* Prominent Mode Toggle for Admins */}
                     <div className="hidden lg:flex p-1.5 bg-white/40 backdrop-blur-xl rounded-[2rem] border border-white/60 shadow-xl shadow-slate-200/40 relative">
                         <AnimatePresence mode="wait">
-                            {['manage-users', 'manage-repo'].map((mode) => (
+                            {['manage-users', 'manage-repo', 'queue'].map((mode) => (
                                 <button
                                     key={mode}
                                     onClick={() => setAppMode(mode)}
@@ -165,9 +212,15 @@ const AdminDashboard = () => {
                                     )}
                                     {mode === 'manage-users' && <Users size={16} className={appMode === 'manage-users' ? 'text-brand-600' : 'text-slate-400'} />}
                                     {mode === 'manage-repo' && <FolderOpen size={16} className={appMode === 'manage-repo' ? 'text-brand-600' : 'text-slate-400'} />}
+                                    {mode === 'queue' && <Layers size={16} className={appMode === 'queue' ? 'text-brand-600' : 'text-slate-400'} />}
 
-                                    <span className="tracking-tight">
-                                        {mode === 'manage-users' ? 'User Management' : 'University Repository'}
+                                    <span className="tracking-tight flex items-center gap-2">
+                                        {mode === 'manage-users' ? 'User Management' : mode === 'manage-repo' ? 'University Repository' : 'Processing Queue'}
+                                        {mode === 'queue' && adminQueue.length > 0 && (
+                                            <span className="flex h-5 items-center justify-center px-2 bg-brand-500 text-white text-[10px] font-black rounded-full shadow-sm animate-pulse">
+                                            {adminQueue.filter(i => i.status === 'completed').length}/{adminQueue.length}
+                                            </span>
+                                        )}
                                     </span>
                                 </button>
                             ))}
@@ -433,7 +486,18 @@ const AdminDashboard = () => {
                                         </div>
                                     </div>
                                     <div className="p-6">
-                                        <UploadZone onUpload={handleUniversityUpload} isAnalyzing={addRepoAnalyzing} jobId={addRepoJobId} onComplete={handleAddRepoComplete} user={user} showHero={false} title="Quick Upload" description="Drag & drop your files here" loadingLabel="Indexing..." loadingSubLabel="Adding to global database" />
+                                        <UploadZone 
+                                           onUpload={handleUniversityUpload} 
+                                           isAnalyzing={false} 
+                                           jobId={null} 
+                                           onComplete={() => {}} 
+                                           user={user} 
+                                           showHero={false} 
+                                           title="Quick Upload" 
+                                           description="Drag & drop multiple files or folders" 
+                                           loadingLabel="Indexing..." 
+                                           loadingSubLabel="Adding to global database" 
+                                        />
                                     </div>
                                 </motion.div>
                             </div>
@@ -443,6 +507,113 @@ const AdminDashboard = () => {
                                 </motion.div>
                             </div>
                         </div>
+                    </div>
+                )}
+                {/* 3. Queue Mode */}
+                {appMode === 'queue' && (
+                    <div className="w-full max-w-6xl mx-auto py-8">
+                        <div className="flex flex-col md:flex-row md:items-end md:justify-between mb-10 gap-6">
+                            <div>
+                                <h2 className="text-4xl font-black text-slate-800 tracking-tight">Processing Queue</h2>
+                                <p className="text-slate-500 font-medium mt-2 max-w-2xl">
+                                    Monitor your university repository uploads in real-time. Feel free to manage users while these process safely.
+                                </p>
+                            </div>
+                            {adminQueue.length > 0 && (
+                                <div className="flex items-center gap-4">
+                                    <div className="px-4 py-2.5 bg-brand-50 text-brand-700 font-bold rounded-2xl border border-brand-100 flex items-center gap-2 shadow-sm">
+                                        {adminQueue.filter(i => i.status !== 'completed' && i.status !== 'error').length > 0 && <div className="w-4 h-4 rounded-full border-2 border-brand-500 border-t-transparent animate-spin"/>}
+                                        {adminQueue.filter(i => i.status === 'completed').length} / {adminQueue.length} Finished
+                                    </div>
+                                    <button 
+                                        onClick={() => {
+                                            const hasActive = adminQueue.some(i => i.status === 'analyzing' || i.status === 'pending');
+                                            if (hasActive) {
+                                                if (!window.confirm("Some files are still being processed. Are you sure you want to clear the entire queue?")) return;
+                                            }
+                                            setAdminQueue([]);
+                                            setAppMode('manage-repo');
+                                        }}
+                                        className="px-6 py-3 bg-white border-2 border-slate-200 text-slate-500 font-bold rounded-2xl hover:bg-slate-50 hover:text-red-500 hover:border-red-100 transition-all flex items-center gap-2 shadow-sm"
+                                    >
+                                        <Trash2 className="w-4 h-4" />
+                                        Clear Queue
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+
+                        {adminQueue.length > 0 ? (
+                            <div className="space-y-4">
+                                {adminQueue.map((item) => (
+                                    <motion.div 
+                                        key={item.id} 
+                                        initial={{ opacity: 0, x: -10 }}
+                                        animate={{ opacity: 1, x: 0 }}
+                                        className="bg-white rounded-[2rem] border border-slate-200 shadow-sm hover:shadow-xl transition-all duration-300 p-6 flex flex-col md:flex-row md:items-center gap-6 group"
+                                    >
+                                        <div className={`w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 border-2 transition-all ${item.status === 'completed' ? 'bg-emerald-50 border-emerald-100 text-emerald-500' : item.status === 'error' ? 'bg-red-50 border-red-100 text-red-500' : 'bg-slate-50 border-slate-100 text-slate-400'}`}>
+                                            <FileText className="w-7 h-7" />
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                            <div className="flex items-center gap-3 mb-1">
+                                                <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Scan ID: {item.id.slice(0, 8)}</span>
+                                                {item.status === 'analyzing' && <span className="w-2 h-2 rounded-full bg-brand-500 animate-pulse" />}
+                                                <span className="text-[10px] bg-brand-100 text-brand-700 font-bold px-2 py-0.5 rounded-full">Repo Upload</span>
+                                            </div>
+                                            <h3 className="font-black text-slate-800 text-xl truncate" title={item.file?.name}>
+                                                {item.file?.name}
+                                            </h3>
+                                            {item.status === 'error' && (
+                                                <p className="text-sm font-bold text-red-500 mt-2 bg-red-50 px-3 py-1.5 rounded-lg inline-block border border-red-100">{item.error || "An error occurred."}</p>
+                                            )}
+                                            {item.status === 'pending' && (
+                                                <div className="flex items-center gap-2 mt-2 text-slate-400">
+                                                    <div className="w-4 h-4 rounded-full border-2 border-slate-200 border-t-slate-400 animate-spin" />
+                                                    <span className="text-sm font-bold italic">Waiting in queue...</span>
+                                                </div>
+                                            )}
+                                        </div>
+                                        <div className="flex items-center justify-end gap-3 min-w-[140px]">
+                                            {item.status === 'completed' && (
+                                                <div className="px-4 py-2 bg-emerald-50 text-emerald-700 font-bold rounded-2xl border border-emerald-100 flex items-center gap-2">
+                                                    <CheckCircle className="w-4 h-4" /> Added
+                                                </div>
+                                            )}
+                                            {item.status === 'pending' && (
+                                                <button 
+                                                    onClick={() => setAdminQueue(prev => prev.filter(i => i.id !== item.id))}
+                                                    className="p-3 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all"
+                                                >
+                                                    <LogOut className="w-5 h-5 rotate-180" />
+                                                </button>
+                                            )}
+                                            {item.status === 'analyzing' && (
+                                                <div className="text-right">
+                                                    <div className="text-xs font-black text-brand-600 uppercase tracking-widest mb-1">Uploading...</div>
+                                                    <div className="flex gap-1 justify-end">
+                                                        <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-bounce [animation-delay:-0.3s]" />
+                                                        <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-bounce [animation-delay:-0.15s]" />
+                                                        <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-bounce" />
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    </motion.div>
+                                ))}
+                            </div>
+                        ) : (
+                            <div className="w-full text-center p-20 bg-white rounded-[3rem] border border-slate-200 shadow-sm mt-8 relative overflow-hidden">
+                                <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-teal-500 to-emerald-500" />
+                                <div className="w-24 h-24 mx-auto bg-slate-50 rounded-[2rem] flex items-center justify-center mb-6 shadow-inner">
+                                    <Layers className="w-10 h-10 text-slate-300" />
+                                </div>
+                                <h3 className="text-3xl font-black text-slate-800 mb-3 tracking-tight">Queue is Empty</h3>
+                                <p className="text-slate-500 font-medium max-w-md mx-auto leading-relaxed">
+                                    No documents are currently being processed. Head back to the repository manager to upload!
+                                </p>
+                            </div>
+                        )}
                     </div>
                 )}
             </main>
