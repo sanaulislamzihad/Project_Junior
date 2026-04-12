@@ -11,6 +11,7 @@ import {
     GraduationCap, User, LogOut, Mail, Lock, X, ChevronDown, Loader2,
     Database, FolderOpen, Layers, FileText, CheckCircle, Upload
 } from 'lucide-react';
+import AnalyzingProgress from './AnalyzingProgress';
 
 const AdminDashboard = () => {
     const { user, logout } = useAuth();
@@ -54,13 +55,20 @@ const AdminDashboard = () => {
         } catch(e) {}
     }, [stateHydrated, storageKey, appMode, adminQueue]);
 
+    const handleItemComplete = (id, result) => {
+        setAdminQueue(q => q.map(item => item.id === id ? { ...item, status: 'completed', jobId: null } : item));
+        setPastDocsRefresh(n => n + 1);
+    };
+
     useEffect(() => {
         if (adminQueue.length === 0) return;
         
         const allDone = adminQueue.every(item => item.status === 'completed' || item.status === 'error');
         if (allDone) return;
         
-        if (adminQueue.some(item => item.status === 'analyzing')) return;
+        // If an item is already 'analyzing' and has a 'jobId', we don't need to do anything here; 
+        // the AnalyzingProgress component handles the rest.
+        if (adminQueue.some(item => item.status === 'analyzing' && item.jobId)) return;
 
         const nextItemIndex = adminQueue.findIndex(item => item.status === 'pending');
         if (nextItemIndex === -1) return;
@@ -75,13 +83,14 @@ const AdminDashboard = () => {
             formData.append('role', 'admin');
             formData.append('add_to_repo', 'true');
             if (user?.id) formData.append('user_id', String(user.id));
+            
             try {
-                await axios.post('http://localhost:8000/analyze', formData, {
+                const response = await axios.post('http://localhost:8000/analyze', formData, {
                     headers: { 'Content-Type': 'multipart/form-data' },
                 });
-                setAdminQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'completed' } : i));
-                setPastDocsRefresh(n => n + 1);
+                setAdminQueue(q => q.map(i => i.id === item.id ? { ...i, jobId: response.data.job_id } : i));
             } catch (error) {
+                console.error("Error starting admin analysis:", error);
                 const msg = error.response?.data?.detail || error.message || "Backend not reachable.";
                 setAdminQueue(q => q.map(i => i.id === item.id ? { ...i, status: 'error', error: msg } : i));
             }
@@ -144,6 +153,7 @@ const AdminDashboard = () => {
             id: crypto.randomUUID(),
             file,
             status: 'pending',
+            jobId: null,
             error: null
         }));
         setAdminQueue(prev => [...prev, ...newItems]);
@@ -573,6 +583,11 @@ const AdminDashboard = () => {
                                                     <span className="text-sm font-bold italic">Waiting in queue...</span>
                                                 </div>
                                             )}
+                                            {item.status === 'analyzing' && item.jobId && (
+                                              <div className="mt-2 max-w-sm">
+                                                <AnalyzingProgress jobId={item.jobId} onComplete={(result) => handleItemComplete(item.id, result)} title="" subtitle="" hideTitle />
+                                              </div>
+                                            )}
                                         </div>
                                         <div className="flex items-center justify-end gap-3 min-w-[140px]">
                                             {item.status === 'completed' && (
@@ -590,7 +605,7 @@ const AdminDashboard = () => {
                                             )}
                                             {item.status === 'analyzing' && (
                                                 <div className="text-right">
-                                                    <div className="text-xs font-black text-brand-600 uppercase tracking-widest mb-1">Uploading...</div>
+                                                    <div className="text-xs font-black text-brand-600 uppercase tracking-widest mb-1">Scanning...</div>
                                                     <div className="flex gap-1 justify-end">
                                                         <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-bounce [animation-delay:-0.3s]" />
                                                         <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-bounce [animation-delay:-0.15s]" />

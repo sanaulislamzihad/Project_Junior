@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+
 import {
     ChevronRight, FileText, RotateCcw, CheckCircle,
     BarChart2, Info, Hash, Clock, Layers,
@@ -79,12 +80,38 @@ const ReportView = ({ data, pdfFile, onReset }) => {
             a.click();
             URL.revokeObjectURL(url);
         } catch (err) {
-            alert('Could not generate report: ' + err.message);
+            console.error('Report generation error:', err);
         } finally {
             setReportLoading(false);
         }
     };
-    const pdfSource = pdfFile || (data.highlighted_pdf_url ? `http://localhost:8000${data.highlighted_pdf_url}` : null);
+    // Decode embedded base64 PDF (no HTTP fetch needed — bypasses IDM entirely)
+    // We prefer the 'source_pdf_base64' (clean doc) so the frontend can draw interactive highlights.
+    const pdfBytesFromBase64 = useMemo(() => {
+        const base64Data = data.source_pdf_base64 || data.highlighted_pdf_base64;
+        if (!base64Data) return null;
+        try {
+            const binaryStr = atob(base64Data);
+            const bytes = new Uint8Array(binaryStr.length);
+            for (let i = 0; i < binaryStr.length; i++) {
+                bytes[i] = binaryStr.charCodeAt(i);
+            }
+            return bytes;
+        } catch (err) {
+            console.error('Failed to decode base64 PDF:', err);
+            return null;
+        }
+    }, [data.source_pdf_base64, data.highlighted_pdf_base64]);
+
+    // Memoize the final source object to prevent react-pdf from re-loading 
+    // and hitting "detached buffer" errors on unrelated re-renders.
+    const pdfSource = useMemo(() => {
+        if (pdfFile) return pdfFile;
+        if (pdfBytesFromBase64) return { data: pdfBytesFromBase64 };
+        return null;
+    }, [pdfFile, pdfBytesFromBase64]);
+
+
     const interactiveHighlights = data.highlight_summary?.located_sentences || [];
 
     useEffect(() => {
@@ -123,7 +150,8 @@ const ReportView = ({ data, pdfFile, onReset }) => {
             });
             return cov;
         }
-        if (!data.matches?.length || hasNewFormat) return null;
+        if (!data.matches?.length) return null;
+
         const sorted = [...data.matches].sort((a, b) => (b.similarity_score ?? 0) - (a.similarity_score ?? 0));
         const coverage = new Array(src.length).fill(-1);
         sorted.forEach((match, matchIdx) => {
@@ -258,7 +286,7 @@ const ReportView = ({ data, pdfFile, onReset }) => {
                         </div>
 
                         {/* PDF Viewer or extracted text fallback */}
-                        {pdfSource && (data.filename || '').toLowerCase().endsWith('.pdf') ? (
+                        {pdfSource ? (
                             <div className="flex-1 overflow-hidden bg-slate-100" style={{ minHeight: 0 }}>
                                 <PdfViewer
                                     file={pdfSource}

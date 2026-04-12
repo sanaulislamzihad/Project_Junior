@@ -35,9 +35,10 @@ const PdfViewer = ({ file, showTextLayer = false, interactiveHighlights = [], on
 
     const onDocumentLoadError = useCallback((error) => {
         console.error('PDF load error:', error);
-        setLoadError('Failed to load PDF. Please try again.');
+        setLoadError(`Failed to load PDF: ${error.message || 'Unknown error'}`);
         setIsLoading(false);
     }, []);
+
 
     const goToPrev = () => setPageNumber((p) => Math.max(1, p - 1));
     const goToNext = () => setPageNumber((p) => Math.min(numPages || 1, p + 1));

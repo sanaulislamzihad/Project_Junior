@@ -30,6 +30,7 @@ from diff_checker import compute_comparison
 from pdf_highlight_pipeline import highlight_pdf_matches
 from report_generator import generate_turnitin_report
 from text_highlight_builder import build_text_highlights
+from pdf_utils import create_pdf_from_text
 
 
 def group_matches_by_source(raw_matches: list) -> list:
@@ -393,23 +394,30 @@ async def _run_analysis(
         return
 
     try:
-        await _push(queue, 10, "Extracting text\u2026")
         if direct_text is not None:
-            chunks, meta, cleaned_text = await asyncio.to_thread(
-                _process_direct_text,
+            await _push(queue, 10, "Converting text to PDF\u2026")
+            synthetic_pdf_path = os.path.join(tempfile.gettempdir(), f"direct_{job_id[:8]}.pdf")
+            await asyncio.to_thread(
+                create_pdf_from_text,
                 direct_text,
-                original_filename,
+                synthetic_pdf_path,
+                title=f"Direct Text Submission ({original_filename})"
             )
-        else:
-            pdf_method = "pymupdf" if ext == ".pdf" else "pdfplumber"
-            chunks, meta, cleaned_text = await asyncio.to_thread(
-                process_document,
-                tmp_path,
-                pdf_method=pdf_method,
-                chunk_strategy="words",
-                max_chunk_size=150,
-                overlap=20,
-            )
+            # Switch to PDF mode
+            tmp_path = synthetic_pdf_path
+            ext = ".pdf"
+            original_filename = original_filename.replace(".txt", ".pdf") if original_filename.endswith(".txt") else f"{original_filename}.pdf"
+
+        await _push(queue, 15, "Extracting text\u2026")
+        pdf_method = "pymupdf" if ext == ".pdf" else "pdfplumber"
+        chunks, meta, cleaned_text = await asyncio.to_thread(
+            process_document,
+            tmp_path,
+            pdf_method=pdf_method,
+            chunk_strategy="words",
+            max_chunk_size=150,
+            overlap=20,
+        )
 
         if meta.num_pages_or_slides > 250:
             warning_msg = (
@@ -527,6 +535,28 @@ async def _run_analysis(
         # Stage final — Finalise
         await _push(queue, 95, "Finalising report\u2026")
 
+        # Capture original/source PDF as base64 for the interactive viewer
+        # This allows the frontend to show a "clean" document and draw highlights on top
+        source_pdf_base64 = None
+        if tmp_path and os.path.exists(tmp_path):
+            import base64
+            try:
+                with open(tmp_path, "rb") as f:
+                    source_pdf_base64 = base64.b64encode(f.read()).decode("ascii")
+            except Exception:
+                pass
+
+        # Also keep highlighted version for other uses (like downloads or non-interactive previews)
+        highlighted_pdf_base64 = None
+        if highlighted_pdf_url:
+            import base64
+            artifact_full_path = os.path.join(ARTIFACTS_DIR, os.path.basename(highlighted_pdf_url))
+            try:
+                with open(artifact_full_path, "rb") as f:
+                    highlighted_pdf_base64 = base64.b64encode(f.read()).decode("ascii")
+            except Exception:
+                pass
+
         result = {
             "source_text": cleaned_text,
             "overall_similarity": overall_similarity,
@@ -536,6 +566,8 @@ async def _run_analysis(
             "matches": matches,
             "top_similar_sentences": top_similar_sentences,
             "highlighted_pdf_url": highlighted_pdf_url,
+            "highlighted_pdf_base64": highlighted_pdf_base64,
+            "source_pdf_base64": source_pdf_base64,
             "highlight_summary": highlight_summary,
             "text_highlights": text_highlights,
             "filename": original_filename,

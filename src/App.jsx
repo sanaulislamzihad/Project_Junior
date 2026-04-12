@@ -80,7 +80,9 @@ function MainApp() {
         if (allowedModes.includes(saved?.appMode)) setAppMode(saved.appMode);
         if (saved?.compareAgainst) setCompareAgainst(saved.compareAgainst);
         if (saved?.checkQueue) setCheckQueue(saved.checkQueue);
-        if (saved?.viewingResultId) setViewingResultId(saved.viewingResultId);
+        // Do NOT restore viewingResultId — result data is stripped from
+        // localStorage ("[CACHED]") so there is nothing to display.
+        // Always land on the main dashboard after login / refresh.
 
         if (saved?.addRepoJobId) {
           setAddRepoJobId(saved.addRepoJobId);
@@ -460,15 +462,25 @@ function MainApp() {
           )}
 
           {/* Render Active View Result from Queue instead of original content if chosen */}
-          {!restoring && viewingResultId ? (
-             <div className="flex flex-col w-full h-full relative">
-               <ReportView 
-                 data={checkQueue.find(i => i.id === viewingResultId)?.result} 
-                 pdfFile={checkQueue.find(i => i.id === viewingResultId)?.file || { name: 'Direct Text Input' }} 
-                 onReset={() => { setViewingResultId(null); setAppMode('queue'); }} 
-               />
-             </div>
-          ) : (
+          {!restoring && viewingResultId && (() => {
+            const viewItem = checkQueue.find(i => i.id === viewingResultId);
+            const viewData = viewItem?.result;
+            // Guard: only render if we have a real result object (not "[CACHED]" or null)
+            if (!viewData || typeof viewData !== 'object') {
+              // Auto-clear stale viewingResultId on next tick
+              setTimeout(() => setViewingResultId(null), 0);
+              return null;
+            }
+            return (
+              <div className="flex flex-col w-full h-full relative">
+                <ReportView 
+                  data={viewData} 
+                  pdfFile={viewItem?.file || null} 
+                  onReset={() => { setViewingResultId(null); setAppMode('queue'); }} 
+                />
+              </div>
+            );
+          })() || (
             <>
               {/* 1. Repository Check Mode */}
               {!restoring && appMode === 'repo' && (

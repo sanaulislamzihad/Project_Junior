@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import axios from 'axios';
 
-const AnalyzingProgress = ({ jobId, onComplete, title = "Analyzing Document...", subtitle = "Checking for AI & Plagiarism matches" }) => {
+const AnalyzingProgress = ({ jobId, onComplete, title = "Analyzing Document...", subtitle = "Checking for AI & Plagiarism matches", hideTitle = false }) => {
     const [progress, setProgress] = useState(0);
     const [stage, setStage] = useState("Starting\u2026");
     const [error, setError] = useState(null);
@@ -133,13 +133,17 @@ const AnalyzingProgress = ({ jobId, onComplete, title = "Analyzing Document...",
     }
 
     return (
-        <motion.div key="analyzing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="flex flex-col items-center w-full max-w-sm px-6">
-            <div className="relative w-16 h-16 mb-4">
-                <div className="absolute inset-0 border-4 border-slate-100 rounded-full"></div>
-                <div className="absolute inset-0 border-4 border-brand-500 rounded-full border-t-transparent animate-spin"></div>
-            </div>
-            <p className="font-black text-xl text-slate-700 text-center">{title}</p>
-            <p className="text-sm font-medium text-slate-400 mt-2 mb-6 text-center">{subtitle}</p>
+        <motion.div key="analyzing" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className={`flex flex-col items-center w-full ${hideTitle ? 'max-w-none px-0' : 'max-w-sm px-6'}`}>
+            {!hideTitle && (
+                <>
+                    <div className="relative w-16 h-16 mb-4">
+                        <div className="absolute inset-0 border-4 border-slate-100 rounded-full"></div>
+                        <div className="absolute inset-0 border-4 border-brand-500 rounded-full border-t-transparent animate-spin"></div>
+                    </div>
+                    <p className="font-black text-xl text-slate-700 text-center">{title}</p>
+                    <p className="text-sm font-medium text-slate-400 mt-2 mb-6 text-center">{subtitle}</p>
+                </>
+            )}
 
             <div className="w-full mt-2">
                 <div className="flex justify-between items-end mb-2 px-1">
