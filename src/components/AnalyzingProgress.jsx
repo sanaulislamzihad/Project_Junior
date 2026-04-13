@@ -28,67 +28,82 @@ const AnalyzingProgress = ({ jobId, onComplete, title = "Analyzing Document...",
         if (!jobId) return;
         doneRef.current = false;
         setError(null);
-        setProgress(0);
-        setStage("Starting\u2026");
         setStartTime(Date.now());
-        setEta("Estimating remaining time\u2026");
+        setEta("Estimating\u2026");
 
-        let serverErrorHandled = false;
-
-        const es = new EventSource(`http://localhost:8000/analyze/stream/${jobId}`);
-        esRef.current = es;
-
-        es.onmessage = async (event) => {
+        // Fetch initial status to hydrate state immediately
+        const fetchInitialStatus = async () => {
             try {
-                const data = JSON.parse(event.data);
-
-                if (data.error) {
-                    setError(data.error);
-                    es.close();
-                    return;
-                }
-
-                setProgress(data.progress ?? 0);
-                setStage(data.stage ?? "Processing\u2026");
-
-                if (data.progress === 100 && data.stage === "Done") {
-                    doneRef.current = true;
-                    es.close();
-                    try {
-                        const res = await axios.get(`http://localhost:8000/analyze/result/${jobId}`);
-                        if (onComplete) onComplete(res.data);
-                    } catch (err) {
-                        setError("Failed to fetch result. " + (err.response?.data?.detail || err.message));
+                const res = await axios.get(`http://localhost:8000/analyze/status/${jobId}`);
+                if (res.data.progress !== undefined) {
+                    setProgress(res.data.progress);
+                    setStage(res.data.stage || "Analysis in progress\u2026");
+                    if (res.data.progress === 100 && res.data.stage === "Done") {
+                        fetchResultFallback();
+                        return true;
                     }
                 }
-            } catch (parseErr) {
-                console.error("SSE parse error:", parseErr);
+            } catch (e) {
+                console.warn("Initial status fetch failed:", e);
             }
+            return false;
         };
 
-        es.addEventListener("error", (event) => {
-            if (event?.data) {
+        let serverErrorHandled = false;
+        let es = null;
+
+        fetchInitialStatus().then(alreadyDone => {
+            if (alreadyDone) return;
+
+            es = new EventSource(`http://localhost:8000/analyze/stream/${jobId}`);
+            esRef.current = es;
+
+            es.onmessage = async (event) => {
                 try {
                     const data = JSON.parse(event.data);
-                    serverErrorHandled = true;
-                    setError(data.error || "An error occurred during analysis.");
-                    es.close();
-                } catch {}
-            }
-        });
+                    if (data.error) {
+                        setError(data.error);
+                        es.close();
+                        return;
+                    }
 
-        es.onerror = () => {
-            if (doneRef.current || serverErrorHandled) return;
-            es.close();
-            fetchResultFallback().then((ok) => {
-                if (!ok) {
-                    setError("Lost connection to the analysis stream. Please try again.");
+                    setProgress(data.progress ?? 0);
+                    setStage(data.stage ?? "Processing\u2026");
+
+                    if (data.progress === 100 && data.stage === "Done") {
+                        doneRef.current = true;
+                        es.close();
+                        fetchResultFallback();
+                    }
+                } catch (parseErr) {
+                    console.error("SSE parse error:", parseErr);
+                }
+            };
+
+            es.addEventListener("error", (event) => {
+                if (event?.data) {
+                    try {
+                        const data = JSON.parse(event.data);
+                        serverErrorHandled = true;
+                        setError(data.error || "An error occurred during analysis.");
+                        es.close();
+                    } catch {}
                 }
             });
-        };
+
+            es.onerror = () => {
+                if (doneRef.current || serverErrorHandled) return;
+                es.close();
+                fetchResultFallback().then((ok) => {
+                    if (!ok) {
+                        setError("Lost connection to the analysis stream. Please try again.");
+                    }
+                });
+            };
+        });
 
         return () => {
-            es.close();
+            if (es) es.close();
         };
     }, [jobId]);
 

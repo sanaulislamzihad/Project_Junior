@@ -1,3 +1,4 @@
+--index-url https://download.pytorch.org/whl/cu126
 fastapi
 uvicorn
 sse-starlette
@@ -8,8 +9,9 @@ PyMuPDF
 PyPDF2
 python-pptx
 sentence-transformers
-faiss-cpu
+faiss-gpu
 torch
+torchvision
 numpy
 nltk
 reportlab

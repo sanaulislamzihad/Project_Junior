@@ -128,6 +128,7 @@ def _cleanup_stale_entries():
     """Remove job queues and results older than JOB_TTL to prevent memory leaks."""
     now = time.time()
     for k in [k for k, v in jobs.items() if now - v.get("created_at", 0) > JOB_TTL]:
+        # Only cleanup if no active subscribers or if truly stale
         jobs.pop(k, None)
     for k in [k for k, v in analysis_results.items() if now - v.get("created_at", 0) > JOB_TTL]:
         analysis_results.pop(k, None)
@@ -343,8 +344,13 @@ def documents_scan(repo_type: str = "university", owner_id: int = None):
 ALLOWED_EXTENSIONS = {".pdf", ".pptx"}
 
 
-async def _push(queue, progress: int, stage: str):
-    await queue.put({"progress": progress, "stage": stage})
+async def _push(job_id: str, progress: int, stage: str):
+    entry = jobs.get(job_id)
+    if not entry:
+        return
+    status = {"progress": progress, "stage": stage}
+    entry["last_event"] = status
+    await entry["queue"].put(status)
     await asyncio.sleep(0.3)
 
 
@@ -395,7 +401,7 @@ async def _run_analysis(
 
     try:
         if direct_text is not None:
-            await _push(queue, 10, "Converting text to PDF\u2026")
+            await _push(job_id, 10, "Converting text to PDF\u2026")
             synthetic_pdf_path = os.path.join(tempfile.gettempdir(), f"direct_{job_id[:8]}.pdf")
             await asyncio.to_thread(
                 create_pdf_from_text,
@@ -408,7 +414,7 @@ async def _run_analysis(
             ext = ".pdf"
             original_filename = original_filename.replace(".txt", ".pdf") if original_filename.endswith(".txt") else f"{original_filename}.pdf"
 
-        await _push(queue, 15, "Extracting text\u2026")
+        await _push(job_id, 15, "Extracting text\u2026")
         pdf_method = "pymupdf" if ext == ".pdf" else "pdfplumber"
         chunks, meta, cleaned_text = await asyncio.to_thread(
             process_document,
@@ -425,7 +431,7 @@ async def _run_analysis(
                 f"the 250-page limit. It cannot be added to the repository or scanned. "
                 f"Please upload a document with 250 pages or fewer."
             )
-            await queue.put({"progress": 100, "stage": "Done", "warning": warning_msg})
+            await _push(job_id, 100, "Done")
             analysis_results[job_id] = {"data": {
                 "warning": warning_msg,
                 "page_or_slide_count": meta.num_pages_or_slides,
@@ -436,7 +442,7 @@ async def _run_analysis(
             }, "created_at": time.time()}
             return
 
-        await _push(queue, 25, "Chunking complete\u2026")
+        await _push(job_id, 25, "Chunking complete\u2026")
 
         meta_dict = meta.to_dict()
         meta_dict["file_path"] = file_path_stored
@@ -466,7 +472,7 @@ async def _run_analysis(
             embeddings_arr = np.array(embeddings_arr)
             embeddings_blobs = [arr.tobytes() for arr in embeddings_arr]
 
-            await _push(queue, 70, "Saving to repository\u2026")
+            await _push(job_id, 70, "Saving to repository\u2026")
             await asyncio.to_thread(
                 save_document,
                 document_id=meta.document_id,
@@ -487,12 +493,12 @@ async def _run_analysis(
 
         elif chunks:
             # Stage 2 — Similarity scan
-            await _push(queue, 45, "Computing embeddings\u2026")
+            await _push(job_id, 45, "Computing embeddings\u2026")
             repo_chunks = await asyncio.to_thread(
                 get_chunks_with_embeddings, repo_type=repo_type, owner_id=owner_id_val
             )
 
-            await _push(queue, 60, "Scanning repository\u2026")
+            await _push(job_id, 60, "Scanning repository\u2026")
             (
                 semantic_similarity,
                 lexical_similarity,
@@ -507,7 +513,7 @@ async def _run_analysis(
                 owner_id=owner_id_val,
             )
 
-            await _push(queue, 75, "Ranking matches\u2026")
+            await _push(job_id, 75, "Ranking matches\u2026")
             # Group chunk-level matches by source document (Turnitin style: one card per source)
             matches = group_matches_by_source(matches)
             top_similar_sentences = await asyncio.to_thread(
@@ -515,7 +521,7 @@ async def _run_analysis(
             )
 
             if ext == ".pdf" and tmp_path:
-                await _push(queue, 85, "Generating highlights\u2026")
+                await _push(job_id, 85, "Generating highlights\u2026")
                 safe_base_name = "".join(
                     ch if ch.isalnum() or ch in ("-", "_", ".") else "_"
                     for ch in original_filename
@@ -527,13 +533,13 @@ async def _run_analysis(
                 )
                 highlighted_pdf_url = f"/artifacts/{artifact_name}"
             elif matches:
-                await _push(queue, 85, "Mapping text highlights\u2026")
+                await _push(job_id, 85, "Mapping text highlights\u2026")
                 text_highlights = await asyncio.to_thread(
                     build_text_highlights, cleaned_text, matches
                 )
 
         # Stage final — Finalise
-        await _push(queue, 95, "Finalising report\u2026")
+        await _push(job_id, 95, "Finalising report\u2026")
 
         # Capture original/source PDF as base64 for the interactive viewer
         # This allows the frontend to show a "clean" document and draw highlights on top
@@ -577,7 +583,7 @@ async def _run_analysis(
         }
         analysis_results[job_id] = {"data": result, "created_at": time.time()}
 
-        await queue.put({"progress": 100, "stage": "Done"})
+        await _push(job_id, 100, "Done")
 
     except Exception as e:
         await queue.put({"error": str(e)})
@@ -691,6 +697,11 @@ async def analyze_stream(job_id: str):
         raise HTTPException(status_code=404, detail="Job not found.")
 
     async def event_generator():
+        # Hydration: Send last known event immediately if it exists
+        last = entry.get("last_event")
+        if last:
+            yield {"data": json.dumps(last)}
+
         while True:
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=300.0)
@@ -707,10 +718,21 @@ async def analyze_stream(job_id: str):
             if event.get("progress") == 100 and event.get("stage") == "Done":
                 break
 
-        # Cleanup job queue after streaming ends
-        jobs.pop(job_id, None)
-
     return EventSourceResponse(event_generator())
+
+
+@app.get("/analyze/status/{job_id}")
+async def analyze_status(job_id: str):
+    """Get the current progress/stage of a job without opening an SSE stream."""
+    entry = jobs.get(job_id)
+    if not entry:
+        # Check if it's already in results
+        res = analysis_results.get(job_id)
+        if res:
+            return {"progress": 100, "stage": "Done", "completed": True}
+        return {"progress": 0, "stage": "Not found", "error": "Job not found"}
+    
+    return entry.get("last_event") or {"progress": 0, "stage": "Starting\u2026"}
 
 
 @app.get("/analyze/result/{job_id}")
@@ -770,9 +792,9 @@ async def _run_comparison(
         return
 
     try:
-        await _push(queue, 10, "Reading documents\u2026")
-        await _push(queue, 30, "Extracting text\u2026")
-        await _push(queue, 50, "Comparing documents\u2026")
+        await _push(job_id, 10, "Reading documents\u2026")
+        await _push(job_id, 30, "Extracting text\u2026")
+        await _push(job_id, 50, "Comparing documents\u2026")
 
         safe_name = "".join(
             ch if ch.isalnum() or ch in ("-", "_", ".") else "_"
@@ -785,11 +807,11 @@ async def _run_comparison(
             compute_comparison, source_path, target_path, artifact_path
         )
 
-        await _push(queue, 80, "Generating highlights\u2026")
+        await _push(job_id, 80, "Generating highlights\u2026")
 
         highlighted_pdf_url = f"/artifacts/{artifact_name}"
 
-        await _push(queue, 95, "Finalising\u2026")
+        await _push(job_id, 95, "Finalising\u2026")
 
         # Build highlight_summary.located_sentences in the same format
         # as the plagiarism check pipeline so PdfViewer renders identically.
@@ -839,7 +861,7 @@ async def _run_comparison(
             "is_comparison": True,
         }
         analysis_results[job_id] = {"data": final, "created_at": time.time()}
-        await queue.put({"progress": 100, "stage": "Done"})
+        await _push(job_id, 100, "Done")
 
     except Exception as e:
         await queue.put({"error": str(e)})
