@@ -10,7 +10,7 @@ One PC acts as the **server** (usually the teacher's PC). All other PCs just ope
 
 ```
 Teacher's PC (Server)
-├── Double-click start.bat → server starts
+├── Double-click start.bat → server starts automatically
 ├── Hosts the website + database
 └── All comparisons happen here
 
@@ -32,62 +32,51 @@ Student's PC / Other Teacher's PC
 
 ---
 
-## First-Time Setup (Server PC only — do this once)
+## Requirements (Server PC only)
 
-### Requirements
-- Python 3.10 or higher
-- Node.js 18 or higher + npm
+Before using, make sure these two are installed on the **server PC**:
 
-### Step 1 — Install dependencies
+| Software | Download |
+|----------|----------|
+| Python 3.10+ | https://python.org |
+| Node.js 18+ | https://nodejs.org |
 
-Open a terminal in the project folder and run:
+> Students and other teachers do **not** need to install anything.
 
-```bash
-python -m venv .venv
-.\.venv\Scripts\activate
-pip install -r backend\requirements.txt
-npm install
-```
+---
 
-### Step 2 — Find your server PC's IP address
+## How to Use
+
+### Server PC (Teacher's PC)
+
+**Step 1 — Find your IP address**
 
 Open Command Prompt and run:
-
-```bash
+```
 ipconfig
 ```
-
 Look for **IPv4 Address** under your WiFi:
-
 ```
 Wireless LAN adapter Wi-Fi:
    IPv4 Address. . . : 192.168.1.105   ← write this down
 ```
 
-### Step 3 — Set the IP address
+**Step 2 — Set your IP in the `.env` file**
 
-Open the `.env` file in the project folder and change the IP:
-
+Open the `.env` file in the project folder and change the line:
 ```
 VITE_API_URL=http://192.168.1.105:8000
 ```
+> Replace `192.168.1.105` with your actual IP from Step 1.
 
-> Replace `192.168.1.105` with your actual IP from Step 2.
+**Step 3 — Start the server**
 
-### Step 4 — Build the frontend (run once, and again if IP changes)
+Double-click **`start.bat`**
 
-```bash
-npm run build
-```
-
----
-
-## Starting the Server (Every Time)
-
-**Just double-click `start.bat`**
+- First time: it will automatically install all required packages and build the frontend. This may take **5–10 minutes**.
+- Every time after that: server starts in a few seconds.
 
 The window will show:
-
 ```
   -------------------------------------------------------
    Open in browser (this PC):     http://localhost:8000
@@ -95,20 +84,23 @@ The window will show:
   -------------------------------------------------------
 ```
 
-Keep this window open while the server is running.
+> Keep this window open while the server is running. Do not close it.
 
 ---
 
-## Accessing the Website
+### Student PC / Other Teacher PC
 
-| Device | Open this in browser |
-|--------|---------------------|
-| Server PC (Teacher) | `http://localhost:8000` |
-| Student PC | `http://192.168.1.105:8000` |
-| Other Teacher PC | `http://192.168.1.105:8000` |
+No installation needed. Just:
 
-> Replace `192.168.1.105` with your server's actual IP.
-> All PCs must be connected to the **same university WiFi**.
+1. Connect to **university WiFi**
+2. Open any browser (Chrome, Edge, Firefox)
+3. Type the server address in the address bar:
+```
+http://192.168.1.105:8000
+```
+> Ask your teacher for the correct IP address.
+
+4. Login and start using the system
 
 ---
 
@@ -126,10 +118,10 @@ Keep this window open while the server is running.
 
 ## Adding Users
 
-**Teachers** → must be added by Admin:
+**Teachers** must be added by Admin:
 1. Login as Admin → Admin Dashboard → Add Teacher
 
-**Students** → can self-register:
+**Students** can self-register:
 1. Go to login page → click **"Register here"**
 
 ---
@@ -147,27 +139,24 @@ In the **Repository Manager** tab, teachers see two upload options:
 
 ## Troubleshooting
 
-**`start.bat` shows an error about virtual environment:**
-```bash
-python -m venv .venv
-.\.venv\Scripts\activate
-pip install -r backend\requirements.txt
-```
+**IP address changed after restart:**
+- Run `ipconfig` again on the server PC
+- Update `.env` with the new IP
+- Delete the `dist/` folder
+- Run `start.bat` again (it will rebuild automatically)
 
-**Frontend not loading / white screen:**
-```bash
-npm run build
-```
-Then restart `start.bat`.
-
-**Students from other PCs cannot connect:**
-- Make sure `start.bat` is running on the server PC
-- Run `ipconfig` again — IP can change after reconnecting to WiFi
-- Update `.env` with the new IP, run `npm run build`, restart `start.bat`
+**Students cannot connect:**
+- Make sure `start.bat` window is open on the server PC
 - Make sure all PCs are on the **same WiFi network**
+- Double check the IP in the browser matches the server PC's IP
 
 **First run downloads AI model (~500MB) — this is normal:**
 - Happens once only, future runs are instant
+
+**`start.bat` shows Python/Node.js not found:**
+- Install Python from https://python.org
+- Install Node.js from https://nodejs.org
+- Run `start.bat` again
 
 ---
 
@@ -175,14 +164,14 @@ Then restart `start.bat`.
 
 ```
 project/
-├── start.bat             ← Double-click to start server
+├── start.bat             ← Double-click to start (use this every time)
 ├── .env                  ← Set server IP here
-├── dist/                 ← Built frontend (generated by npm run build)
+├── dist/                 ← Built frontend (auto-generated)
 ├── backend/
 │   ├── main.py           ← FastAPI server
 │   ├── database.py       ← User accounts
 │   ├── document_store.py ← Document storage
-│   └── requirements.txt
+│   └── requirements.txt  ← Python dependencies
 ├── src/                  ← React frontend source code
 ├── auth.db               ← User database
 └── documents.db          ← Document repository
