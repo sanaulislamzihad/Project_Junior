@@ -20,6 +20,8 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
+const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+
 // The main plagiarism tool view (after auth)
 function MainApp() {
   const { user, logout } = useAuth();
@@ -43,6 +45,8 @@ function MainApp() {
   const [diffResultJobId, setDiffResultJobId] = useState(null);
 
   const [compareAgainst, setCompareAgainst] = useState(user?.role === 'teacher' ? ['personal'] : ['university']);
+  // Teacher can choose where to upload: 'personal' (own DB) or 'university' (shared repo)
+  const [repoUploadTarget, setRepoUploadTarget] = useState('personal');
   const [checkDragActive, setCheckDragActive] = useState(false);
   const [checkInputMode, setCheckInputMode] = useState('file');
   const [checkText, setCheckText] = useState('');
@@ -176,6 +180,9 @@ function MainApp() {
   const processQueueItem = async (id, file, directText, isRepoUpload) => {
     setCheckQueue(q => q.map(item => item.id === id ? { ...item, status: 'analyzing' } : item));
 
+    // Get the repoTarget stored in the queue item
+    const queueItem = checkQueue.find(i => i.id === id);
+
     const formData = new FormData();
     if (file) {
       formData.append('file', file);
@@ -190,7 +197,8 @@ function MainApp() {
 
     if (isRepoUpload) {
       add_to_repo = 'true';
-      repoTypeValue = user?.role === 'admin' ? 'university' : 'personal';
+      // Use the target stored in the queue item; admin always goes to university
+      repoTypeValue = user?.role === 'admin' ? 'university' : (queueItem?.repoTarget || 'personal');
     } else {
       if (compareAgainst.includes('university') && compareAgainst.includes('personal')) {
         repoTypeValue = 'both';
@@ -208,7 +216,7 @@ function MainApp() {
     if (user?.id) formData.append('user_id', String(user.id));
     
     try {
-      const response = await axios.post('http://localhost:8000/analyze', formData, {
+      const response = await axios.post(`${API_BASE}/analyze`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
       setCheckQueue(q => q.map(item => item.id === id ? { ...item, jobId: response.data.job_id } : item));
@@ -313,7 +321,8 @@ function MainApp() {
       jobId: null,
       result: null,
       error: null,
-      isRepoUpload: true
+      isRepoUpload: true,
+      repoTarget: user?.role === 'admin' ? 'university' : repoUploadTarget
     }));
     setCheckQueue(q => [...q, ...newItems]);
     setAppMode('queue');
@@ -334,7 +343,7 @@ function MainApp() {
     formData.append('source_file', sourceFile);
     formData.append('target_file', targetFile);
     try {
-      const response = await axios.post('http://localhost:8000/compare', formData, {
+      const response = await axios.post(`${API_BASE}/compare`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
       setDiffJobId(response.data.job_id);
@@ -828,6 +837,30 @@ function MainApp() {
                             <p className="text-xs text-slate-500 font-medium font-medium">Fast indexing for future checks</p>
                           </div>
                         </div>
+                        {/* Teacher: choose upload destination */}
+                        {user?.role === 'teacher' && (
+                          <div className="px-6 pt-5 pb-2">
+                            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">Upload Destination</p>
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setRepoUploadTarget('personal')}
+                                className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl border-2 text-xs font-black transition-all ${repoUploadTarget === 'personal' ? 'border-teal-500 bg-teal-50 text-teal-700' : 'border-slate-200 text-slate-400 hover:border-slate-300'}`}
+                              >
+                                <FolderOpen className="w-4 h-4" />
+                                My Personal DB
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setRepoUploadTarget('university')}
+                                className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl border-2 text-xs font-black transition-all ${repoUploadTarget === 'university' ? 'border-teal-500 bg-teal-50 text-teal-700' : 'border-slate-200 text-slate-400 hover:border-slate-300'}`}
+                              >
+                                <Database className="w-4 h-4" />
+                                University Repo
+                              </button>
+                            </div>
+                          </div>
+                        )}
                         <div className="p-6">
                           <UploadZone onUpload={handleFileUpload} isAnalyzing={addRepoAnalyzing} jobId={addRepoJobId} onComplete={handleAddRepoComplete} user={user} showHero={false} title="Quick Upload" description="Drag & drop your files here" loadingLabel="Indexing..." loadingSubLabel="Adding to database" />
                         </div>
