@@ -1,315 +1,218 @@
-# NSU PlagiChecker
+# NSU PlagiChecker — University Plagiarism Detection System
 
-Full-stack plagiarism and semantic similarity checker with:
-- FastAPI backend
-- React + Vite frontend
-- FAISS Top-K retrieval
-- N-gram fingerprint verification
-- Diff comparison endpoint
+A university-wide plagiarism detection system that runs entirely on your **local network (LAN)**. No internet required. Only devices connected to the university WiFi can access it.
 
-## Prerequisites
+---
 
-- Python 3.10+ (recommended)
-- Node.js 18+ and npm
-- Windows PowerShell / terminal
+## How It Works
 
-## Project Setup
+One PC acts as the **server** (usually the teacher's PC). All other PCs just open a browser — nothing to install on their side.
 
-Run from project root:
+```
+Teacher's PC (Server)
+├── Double-click start.bat → server starts
+├── Hosts the website + database
+└── All comparisons happen here
 
-```bash
-cd Project_Junior-master
+Student's PC / Other Teacher's PC
+└── Open browser → type server IP → done
 ```
 
-### 1) Backend install
+---
 
-Create and activate a virtual environment (recommended):
+## Roles
+
+| Role | What they can do |
+|------|-----------------|
+| **Admin** | Manage users (add/remove teachers & students) |
+| **Teacher** | Upload to University Repo or Personal DB, check plagiarism |
+| **Student** | Submit documents, compare against University Repo only |
+
+> Student submissions are only compared against the **University Repository** — not against any teacher's personal database.
+
+---
+
+## First-Time Setup (Server PC only — do this once)
+
+### Requirements
+- Python 3.10 or higher
+- Node.js 18 or higher + npm
+
+### Step 1 — Install dependencies
+
+Open a terminal in the project folder and run:
 
 ```bash
 python -m venv .venv
 .\.venv\Scripts\activate
-```
-
-Install backend dependencies:
-
-```bash
-pip install -r backend/requirements.txt
-```
-
-### 2) Frontend install
-
-In a second terminal (project root), install frontend dependencies:
-
-```bash
+pip install -r backend\requirements.txt
 npm install
 ```
 
-## Run the app
+### Step 2 — Find your server PC's IP address
 
-### Terminal A - start backend
-
-```bash
-cd backend
-python main.py
-```
-
-Backend runs on:
-- `http://localhost:8000`
-
-### Terminal B - start frontend
-
-From project root:
+Open Command Prompt and run:
 
 ```bash
-npm run dev
+ipconfig
 ```
 
-Frontend runs on:
-- `http://localhost:5173`
-
-## Optional commands
-
-- Frontend production build:
-  ```bash
-  npm run build
-  ```
-- Backend quick health check:
-  - Open `http://localhost:8000/` in browser
-
----
-
-## Similarity Scoring System — How It Works
-
-NSU PlagiChecker uses a **multi-layer, multi-algorithm** approach to detect both exact copying and paraphrased plagiarism. Below is a complete explanation of every score reported by the system.
-
----
-
-### 1. Embedding Model
-
-| Property | Value |
-|---|---|
-| Model | `sentence-transformers/all-mpnet-base-v2` |
-| Vector Dimension | 768 |
-| Source | Hugging Face / SBERT |
-| Strength | State-of-the-art on MTEB benchmark; captures deep semantic meaning |
-
-The model converts each text chunk into a 768-dimensional vector. Similar meanings produce vectors that point in similar directions, even when the exact words are completely different.
-
----
-
-### 2. Individual Similarity Algorithms
-
-The system uses **four independent algorithms**, each detecting a different type of similarity:
-
-#### a) Semantic Similarity (Cosine Similarity)
-
-| Aspect | Detail |
-|---|---|
-| What it measures | **Meaning similarity** — do two texts say the same thing? |
-| How it works | Text → 768-dim vector via `all-mpnet-base-v2` → cosine of angle between vectors |
-| Range | 0.0 (completely unrelated) to 1.0 (identical meaning) |
-| Catches | Paraphrasing, rewriting, sentence restructuring, synonym substitution |
-
-**Formula:**
+Look for **IPv4 Address** under your WiFi:
 
 ```
-cosine_similarity = dot(A, B) / (||A|| × ||B||)
+Wireless LAN adapter Wi-Fi:
+   IPv4 Address. . . : 192.168.1.105   ← write this down
 ```
 
-**Example:**
-- "The student submitted the weekly report" vs "Weekly report was submitted by the student" → **~0.92** (high semantic, same meaning)
-- "Neural networks detect patterns" vs "The weather is sunny today" → **~0.08** (low, unrelated topics)
+### Step 3 — Set the IP address
 
-#### b) Lexical Similarity (Jaccard Word Overlap)
-
-| Aspect | Detail |
-|---|---|
-| What it measures | **Exact word overlap** — how many words are shared? |
-| How it works | Tokenize both texts into word sets → Jaccard = \|intersection\| / \|union\| |
-| Range | 0.0 (no shared words) to 1.0 (identical word sets) |
-| Catches | Direct copy-paste, minor word reordering, light editing |
-
-**Formula:**
+Open the `.env` file in the project folder and change the IP:
 
 ```
-jaccard = |words_A ∩ words_B| / |words_A ∪ words_B|
+VITE_API_URL=http://192.168.1.105:8000
 ```
 
-**Example:**
-- "machine learning is powerful" vs "machine learning is very powerful" → **~0.80**
-- "the cat sat on the mat" vs "quantum physics research paper" → **0.00**
+> Replace `192.168.1.105` with your actual IP from Step 2.
 
-#### c) Fingerprint Similarity (Character N-gram Hashing)
+### Step 4 — Build the frontend (run once, and again if IP changes)
 
-| Aspect | Detail |
-|---|---|
-| What it measures | **Character-level structural overlap** |
-| How it works | Extract character 5-grams → SHA-1 hash each → Jaccard over hashed fingerprints |
-| Range | 0.0 (no overlap) to 1.0 (identical structure) |
-| Catches | Partial copy-paste, sentence fragments copied verbatim, minor character edits |
-
-This is more fine-grained than word-level Jaccard because it catches sub-word patterns and exact phrase fragments.
-
-#### d) Winnowing Similarity (Stanford MOSS Algorithm)
-
-| Aspect | Detail |
-|---|---|
-| What it measures | **Document fingerprint overlap** using the Winnowing algorithm |
-| How it works | Remove whitespace → k-gram hashes → sliding window selects minimum hash → Jaccard over fingerprints |
-| Range | 0.0 to 1.0 |
-| Catches | Code/text plagiarism that preserves structure; used in Stanford MOSS plagiarism detection |
-| Parameters | k=5 (gram size), w=4 (window size) |
-
-Winnowing is the same algorithm used by **Stanford MOSS** (Measure of Software Similarity), a widely-used plagiarism detection system in universities.
-
----
-
-### 3. Combined Similarity Score (Per Chunk)
-
-Each text chunk gets a **combined score** that blends all four algorithms with carefully tuned weights:
-
-```
-Combined = (0.60 × Semantic) + (0.15 × Lexical) + (0.15 × Winnowing) + (0.10 × Fingerprint)
-```
-
-| Algorithm | Weight | Why This Weight |
-|---|---|---|
-| Semantic (AI) | **60%** | Primary detector — catches paraphrasing that other methods miss |
-| Lexical (Jaccard) | **15%** | Rewards exact word overlap as supporting evidence |
-| Winnowing (MOSS) | **15%** | Catches structural copying patterns |
-| Fingerprint (N-gram) | **10%** | Fine-grained character-level verification |
-
-Semantic similarity gets the highest weight because plagiarism often involves rewriting — changing words while keeping the same meaning. Lexical and structural methods serve as **verification layers** that boost confidence when exact copying is present.
-
----
-
-### 4. Overall Similarity Percentage (Final Score)
-
-The final percentage displayed to the user is calculated as:
-
-```
-Overall % = Match Rate × Average Quality × 100
-```
-
-Where:
-- **Match Rate** = (number of query chunks that found a match) / (total query chunks)
-- **Average Quality** = average combined similarity of matched chunks only
-
-| Overall Score | Interpretation | Color |
-|---|---|---|
-| **0% – 29%** | **LOW SIMILARITY** — Document appears mostly original | Green |
-| **30% – 59%** | **MODERATE SIMILARITY** — Some sections match existing documents; review recommended | Orange |
-| **60% – 100%** | **HIGH SIMILARITY** — Significant overlap detected; requires careful review | Red |
-
-**Important:** A high similarity score does **not** automatically mean plagiarism. Common phrases, quotations, references, and standard technical terminology can produce matches. The score indicates *how much* text overlaps — a human reviewer decides *whether* it constitutes plagiarism.
-
----
-
-### 5. Sentence-Level Analysis
-
-Beyond chunk-level comparison, the system drills down to **individual sentences** to pinpoint exactly which parts matched:
-
-#### Sentence-Level Matching Criteria
-
-A sentence pair is reported as a match if **either** condition is true:
-
-| Condition | Thresholds | What It Catches |
-|---|---|---|
-| **High semantic** | Semantic ≥ 0.50 | Paraphrased sentences (different words, same meaning) |
-| **High lexical + fingerprint** | Lexical ≥ 0.05 AND Fingerprint ≥ 0.08 | Direct copies with minor edits |
-
-Plus a minimum semantic floor of **0.35** to filter out pure keyword coincidences.
-
-#### Sentence Ranking Score
-
-```
-Sentence Score = (0.75 × Semantic) + (0.20 × Lexical) + (0.05 × Chunk Average)
-```
-
-The top-scoring sentences are shown in the report as **"Top Similar Sentences"** — these are the most likely plagiarized portions of the document.
-
----
-
-### 6. Detection Thresholds Summary
-
-| Threshold | Level | Value | Purpose |
-|---|---|---|---|
-| Semantic Threshold | Chunk | **0.60** | Minimum cosine similarity to consider a chunk match |
-| Lexical Threshold | Chunk | **0.08** | Minimum word overlap to pass |
-| Fingerprint Threshold | Chunk | **0.05** | Minimum n-gram overlap to pass |
-| Semantic Threshold | Sentence | **0.50** | Minimum for sentence-level match |
-| Lexical Threshold | Sentence | **0.05** | Minimum for sentence-level match |
-| Semantic Floor | Sentence | **0.35** | Hard minimum to avoid false positives |
-| High Semantic Override | Chunk | **0.72** | Report match even without sentence evidence (heavy paraphrase) |
-
-A chunk must pass **all three** chunk-level thresholds (semantic AND lexical AND fingerprint) to be considered a match. This triple-gate design minimizes false positives.
-
----
-
-### 7. FAISS Vector Search (Speed Optimization)
-
-| Property | Value |
-|---|---|
-| Index Type | `IndexFlatIP` (exact inner product) |
-| Normalization | L2-normalized vectors → inner product = cosine similarity |
-| Top-K | 50 nearest neighbors per query chunk |
-| Activation | When repository has ≥ 20 chunks |
-| GPU Support | Automatic (CUDA if available) |
-
-For small repositories (< 20 chunks), brute-force comparison is used. For larger repositories, **FAISS** (Facebook AI Similarity Search) provides fast nearest-neighbor lookup without sacrificing accuracy.
-
----
-
-### 8. Score Interpretation Examples
-
-| Scenario | Semantic | Lexical | Combined | Interpretation |
-|---|---|---|---|---|
-| Exact copy-paste | 0.98 | 0.95 | ~0.95 | Direct plagiarism — text copied verbatim |
-| Light paraphrase | 0.85 | 0.40 | ~0.62 | Sentence restructured with some word changes |
-| Heavy paraphrase | 0.72 | 0.10 | ~0.48 | Meaning preserved but extensively rewritten |
-| Same topic, original | 0.55 | 0.15 | ~0.40 | Similar subject matter but independently written |
-| Unrelated content | 0.15 | 0.02 | ~0.10 | No meaningful overlap |
-
----
-
-### 9. Analysis Pipeline Flow
-
-```
-Upload Document
-    │
-    ▼
-Extract Text (PyMuPDF / pdfplumber)
-    │
-    ▼
-Split into Chunks (150 words, 20-word overlap)
-    │
-    ▼
-Generate Embeddings (all-mpnet-base-v2, 768-dim)
-    │
-    ▼
-Search Repository (FAISS Top-50 or Brute-force)
-    │
-    ▼
-Compute 4 Similarity Scores per Chunk Pair
-(Semantic + Lexical + Fingerprint + Winnowing)
-    │
-    ▼
-Apply Thresholds → Filter Matches
-    │
-    ▼
-Drill Down: Sentence-Level Matching
-    │
-    ▼
-Aggregate → Overall Similarity %
-    │
-    ▼
-Generate Report (PDF with highlights)
+```bash
+npm run build
 ```
 
 ---
 
-## Notes
+## Starting the Server (Every Time)
 
-- Keep both backend and frontend running during use.
-- If `vite` is not recognized, run `npm install` again in project root.
-- If sentence-transformer model download is slow, retry once; first run can take longer.
+**Just double-click `start.bat`**
+
+The window will show:
+
+```
+  -------------------------------------------------------
+   Open in browser (this PC):     http://localhost:8000
+   Open from other PCs (WiFi):    http://192.168.1.105:8000
+  -------------------------------------------------------
+```
+
+Keep this window open while the server is running.
+
+---
+
+## Accessing the Website
+
+| Device | Open this in browser |
+|--------|---------------------|
+| Server PC (Teacher) | `http://localhost:8000` |
+| Student PC | `http://192.168.1.105:8000` |
+| Other Teacher PC | `http://192.168.1.105:8000` |
+
+> Replace `192.168.1.105` with your server's actual IP.
+> All PCs must be connected to the **same university WiFi**.
+
+---
+
+## Default Login Credentials
+
+| Role | Email | Password |
+|------|-------|----------|
+| Admin | `admin@nsu.edu` | `admin123` |
+| Teacher (demo) | `rahman@nsu.edu` | `teacher123` |
+| Student (demo) | `fahim.ahmed@northsouth.edu` | `student123` |
+
+> Change these passwords after first login.
+
+---
+
+## Adding Users
+
+**Teachers** → must be added by Admin:
+1. Login as Admin → Admin Dashboard → Add Teacher
+
+**Students** → can self-register:
+1. Go to login page → click **"Register here"**
+
+---
+
+## Teacher: Upload Options
+
+In the **Repository Manager** tab, teachers see two upload options:
+
+| Option | What it does |
+|--------|-------------|
+| **My Personal DB** | Only visible to you |
+| **University Repo** | Shared — student submissions are compared against this |
+
+---
+
+## Troubleshooting
+
+**`start.bat` shows an error about virtual environment:**
+```bash
+python -m venv .venv
+.\.venv\Scripts\activate
+pip install -r backend\requirements.txt
+```
+
+**Frontend not loading / white screen:**
+```bash
+npm run build
+```
+Then restart `start.bat`.
+
+**Students from other PCs cannot connect:**
+- Make sure `start.bat` is running on the server PC
+- Run `ipconfig` again — IP can change after reconnecting to WiFi
+- Update `.env` with the new IP, run `npm run build`, restart `start.bat`
+- Make sure all PCs are on the **same WiFi network**
+
+**First run downloads AI model (~500MB) — this is normal:**
+- Happens once only, future runs are instant
+
+---
+
+## Project Structure
+
+```
+project/
+├── start.bat             ← Double-click to start server
+├── .env                  ← Set server IP here
+├── dist/                 ← Built frontend (generated by npm run build)
+├── backend/
+│   ├── main.py           ← FastAPI server
+│   ├── database.py       ← User accounts
+│   ├── document_store.py ← Document storage
+│   └── requirements.txt
+├── src/                  ← React frontend source code
+├── auth.db               ← User database
+└── documents.db          ← Document repository
+```
+
+---
+
+## Similarity Score Guide
+
+| Score | Meaning |
+|-------|---------|
+| **0% – 29%** | Low — document appears mostly original |
+| **30% – 59%** | Moderate — some sections match, review recommended |
+| **60% – 100%** | High — significant overlap detected |
+
+> A high score does not automatically mean plagiarism. A human reviewer makes the final decision.
+
+---
+
+## How the Similarity Detection Works
+
+The system uses **4 algorithms** combined:
+
+| Algorithm | Weight | Detects |
+|-----------|--------|---------|
+| AI Semantic (deep learning) | 60% | Paraphrasing, same meaning different words |
+| Lexical (word overlap) | 15% | Direct copy-paste |
+| Winnowing (MOSS algorithm) | 15% | Structural copying |
+| Fingerprint (n-gram) | 10% | Partial phrase copying |
+
+---
+
+*© 2026 North South University — Academic Integrity System*
