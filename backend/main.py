@@ -106,11 +106,13 @@ app = FastAPI(title="NSU PlagiChecker Auth")
 ARTIFACTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "artifacts")
 os.makedirs(ARTIFACTS_DIR, exist_ok=True)
 
-_CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:3000").split(",")
+# LAN-only deployment: allow all origins (safe — university WiFi is not public internet)
+# To restrict: set CORS_ORIGINS env var e.g. "http://192.168.1.0/24"
+_CORS_ORIGINS = os.getenv("CORS_ORIGINS", "*")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=_CORS_ORIGINS,
-    allow_credentials=True,
+    allow_origins=[_CORS_ORIGINS] if _CORS_ORIGINS != "*" else ["*"],
+    allow_credentials=_CORS_ORIGINS != "*",
     allow_methods=["*"],
     allow_headers=["*"],
 )
