@@ -10,7 +10,8 @@ from datetime import datetime, timezone
 
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
@@ -262,9 +263,9 @@ def delete_user(user_id: int, current_user: dict = Depends(require_admin)):
     return {"success": True}
 
 
-@app.get("/")
+@app.get("/api/health")
 def health_check():
-    return {"status": "active", "mode": "Auth-Only-Backend"}
+    return {"status": "active", "mode": "NSU-PlagiChecker"}
 
 
 @app.get("/artifacts/{artifact_name}")
@@ -932,6 +933,36 @@ def _startup_cleanup():
                     os.unlink(path)
             except OSError:
                 pass
+
+
+# ==================== SERVE REACT FRONTEND ====================
+# Serves the built React app from the dist/ folder.
+# Run `npm run build` first to generate dist/.
+
+_DIST_DIR = os.path.abspath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "dist"))
+_INDEX_HTML = os.path.join(_DIST_DIR, "index.html")
+
+if os.path.exists(_DIST_DIR):
+    # Serve static assets (JS, CSS, images) under /assets
+    _assets_dir = os.path.join(_DIST_DIR, "assets")
+    if os.path.exists(_assets_dir):
+        app.mount("/assets", StaticFiles(directory=_assets_dir), name="static_assets")
+
+    # Serve other static files at root level (favicon, logo, etc.)
+    @app.get("/favicon.ico", include_in_schema=False)
+    def favicon():
+        p = os.path.join(_DIST_DIR, "favicon.ico")
+        return FileResponse(p) if os.path.exists(p) else HTMLResponse("", status_code=204)
+
+    @app.get("/logo.svg", include_in_schema=False)
+    def logo():
+        p = os.path.join(_DIST_DIR, "logo.svg")
+        return FileResponse(p) if os.path.exists(p) else HTMLResponse("", status_code=204)
+
+    # Catch-all: serve index.html for all frontend routes (React SPA)
+    @app.get("/{full_path:path}", include_in_schema=False)
+    def serve_spa(full_path: str):
+        return FileResponse(_INDEX_HTML)
 
 
 if __name__ == "__main__":
