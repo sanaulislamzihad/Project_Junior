@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C \"c:/Users/User/Downloads/Project_Junior-week5 \\(2\\)\" remote -v)",
+      "Bash(git -C \"c:/Users/User/Downloads/Project_Junior-week5 \\(2\\)\" status)",
+      "Bash(git -C \"c:/Users/User/Downloads/Project_Junior-week5 \\(2\\)\" log --oneline -5)",
+      "Bash(git config:*)",
+      "Bash(git -C \"C:/Users/User/Downloads/Project_Junior-week5 \\(2\\)\" remote -v)",
+      "Bash(git -C \"C:/Users/User/Downloads/Project_Junior-week5 \\(2\\)\" status)",
+      "Bash(git -C \"C:/Users/User/Downloads/Project_Junior-week5 \\(2\\)\" log --oneline -5)"
+    ]
+  }
+}
