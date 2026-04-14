@@ -51,3 +51,4 @@ backend/artifacts/*
 # Environment
 .env
 .venv/
+.claude/
