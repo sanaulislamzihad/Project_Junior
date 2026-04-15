@@ -288,8 +288,8 @@ const ComparisonView = ({ data, suspectFile, onReset }) => {
                                     className="p-4 space-y-2"
                                 >
                                     {[
-                                        { icon: FileText, label: 'Source Document', value: data.metadata?.source_file_name || data.source_filename || '—' },
-                                        { icon: FileText, label: 'Suspect Document', value: data.filename || '—' },
+                                        { icon: FileText, label: 'Original PDF', value: data.metadata?.source_file_name || data.source_filename || '—' },
+                                        { icon: FileText, label: 'Updated PDF', value: data.filename || '—' },
                                         { icon: Hash, label: 'Document ID', value: data.metadata?.document_id, mono: true, small: true },
                                         { icon: Type, label: 'Suspect Pages', value: data.page_or_slide_count != null ? String(data.page_or_slide_count) : '—' },
                                         { icon: Highlighter, label: 'Highlights Applied', value: String(data.highlight_count ?? 0) },

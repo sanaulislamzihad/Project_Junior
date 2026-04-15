@@ -1,12 +1,12 @@
 # NSU PlagiChecker — University Plagiarism Detection System
 
-A university-wide plagiarism detection system that runs entirely on your **local network (LAN)**. No internet required. Only devices connected to the university WiFi can access it.
+A university-wide plagiarism detection system that runs entirely on your **local network (LAN)**. No internet required after setup. Only devices connected to the university WiFi/LAN can access it.
 
 ---
 
 ## How It Works
 
-One PC acts as the **server** (usually the teacher's PC). All other PCs just open a browser — nothing to install on their side.
+One PC acts as the **server** (teacher's PC). All other PCs just open a browser — nothing to install on their side.
 
 ```
 Teacher's PC (Server)
@@ -24,83 +24,132 @@ Student's PC / Other Teacher's PC
 
 | Role | What they can do |
 |------|-----------------|
-| **Admin** | Manage users (add/remove teachers & students) |
-| **Teacher** | Upload to University Repo or Personal DB, check plagiarism |
+| **Admin** | Manage users (add/remove teachers & students), upload to University Repo |
+| **Teacher** | Upload to Personal DB, check plagiarism against University / Personal / Both |
 | **Student** | Submit documents, compare against University Repo only |
 
-> Student submissions are only compared against the **University Repository** — not against any teacher's personal database.
+> - Only **Admin** can upload to the University Repository
+> - **Teachers** upload to their own Personal DB only
+> - **Students** always compare against University Repo only — no other option
 
 ---
 
 ## Requirements (Server PC only)
-
-Before using, make sure these two are installed on the **server PC**:
 
 | Software | Download |
 |----------|----------|
 | Python 3.10+ | https://python.org |
 | Node.js 18+ | https://nodejs.org |
 
-> Students and other teachers do **not** need to install anything.
+> Students and other teachers do **not** need to install anything — just a browser.
 
 ---
 
 ## How to Use
 
-### Server PC (Teacher's PC)
-
-**Step 1 — Find your IP address**
-
-Open Command Prompt and run:
-```
-ipconfig
-```
-Look for **IPv4 Address** under your WiFi:
-```
-Wireless LAN adapter Wi-Fi:
-   IPv4 Address. . . : 192.168.1.105   ← write this down
-```
-
-**Step 2 — Set your IP in the `.env` file**
-
-Open the `.env` file in the project folder and change the line:
-```
-VITE_API_URL=http://192.168.1.105:8000
-```
-> Replace `192.168.1.105` with your actual IP from Step 1.
-
-**Step 3 — Start the server**
+### Step 1 — Start the Server
 
 Double-click **`start.bat`**
 
-- First time: it will automatically install all required packages and build the frontend. This may take **5–10 minutes**.
-- Every time after that: server starts in a few seconds.
+It will automatically:
+- Create Python virtual environment
+- Install all Python packages
+- Detect NVIDIA GPU → install GPU-accelerated PyTorch (faster AI)
+- Install Node.js packages
+- Build the frontend
+- Start the server in the background
 
-The window will show:
-```
-  -------------------------------------------------------
-   Open in browser (this PC):     http://localhost:8000
-   Open from other PCs (WiFi):    http://192.168.1.105:8000
-  -------------------------------------------------------
-```
-
-> Keep this window open while the server is running. Do not close it.
+> **First time only:** takes 5–15 minutes (downloads packages + AI model ~500MB).
+> **Every time after:** starts in a few seconds.
 
 ---
 
-### Student PC / Other Teacher PC
+### Step 2 — Get the Server IP
 
-No installation needed. Just:
+After `start.bat` runs, it shows:
 
-1. Connect to **university WiFi**
-2. Open any browser (Chrome, Edge, Firefox)
-3. Type the server address in the address bar:
 ```
-http://192.168.1.105:8000
-```
-> Ask your teacher for the correct IP address.
+-------------------------------------------------------
+ Share one of these links with students:
+-------------------------------------------------------
 
-4. Login and start using the system
+  This PC only:
+    http://localhost:8000
+
+  Other PCs on the network (use any of these):
+    http://172.20.96.214:8000
+    http://10.100.5.221:8000
+
+-------------------------------------------------------
+```
+
+Share the correct link with students based on which network they are on.
+
+> You can close the `start.bat` window after this — the server keeps running in the background.
+
+---
+
+### Step 3 — Open in Browser
+
+| Device | What to do |
+|--------|-----------|
+| Server PC | Open `http://localhost:8000` |
+| Student / Teacher PC | Open the IP shown in Step 2 |
+
+All PCs must be on the **same WiFi or LAN network**.
+
+---
+
+### Step 4 — Stop the Server
+
+Double-click **`stop.bat`** when you want to shut down the server.
+
+---
+
+## GPU Acceleration (Automatic)
+
+`start.bat` automatically detects your GPU and installs the right version:
+
+| GPU Status | What happens |
+|-----------|-------------|
+| NVIDIA GPU found | Installs CUDA PyTorch → runs AI on GPU (FAST) |
+| No GPU | Uses CPU (slower but works fine) |
+
+Output when GPU is detected:
+```
+[GPU] NVIDIA GeForce RTX 3060 | VRAM: 12288 MiB
+[+] Running in GPU MODE - FAST!
+```
+
+> GPU PyTorch install requires internet — **one time only**.
+
+---
+
+## Background Processing (Logout & Come Back)
+
+Teachers can upload many files and **log out** — processing continues in the background.
+
+```
+Upload 50 files → Logout → Go for lunch
+Come back → Login → All results are ready
+```
+
+Results are saved to the database automatically. They appear in the **Processing Queue** when you log back in, marked as **"Saved Result"**.
+
+> The server (`start.bat`) must stay running while files are being processed.
+
+---
+
+## Network Access
+
+| Network | Can access? |
+|---------|------------|
+| University WiFi | ✅ Yes |
+| University LAN (cable) | ✅ Yes |
+| Mobile data | ❌ No |
+| Home WiFi | ❌ No (unless connected to university VPN) |
+
+No extra configuration needed — private IPs are only reachable from the same network.
 
 ---
 
@@ -112,51 +161,41 @@ http://192.168.1.105:8000
 | Teacher (demo) | `rahman@nsu.edu` | `teacher123` |
 | Student (demo) | `fahim.ahmed@northsouth.edu` | `student123` |
 
-> Change these passwords after first login.
+> Change these after first login.
 
 ---
 
 ## Adding Users
 
 **Teachers** must be added by Admin:
-1. Login as Admin → Admin Dashboard → Add Teacher
+- Login as Admin → Admin Dashboard → Add Teacher
 
 **Students** can self-register:
-1. Go to login page → click **"Register here"**
-
----
-
-## Teacher: Upload Options
-
-In the **Repository Manager** tab, teachers see two upload options:
-
-| Option | What it does |
-|--------|-------------|
-| **My Personal DB** | Only visible to you |
-| **University Repo** | Shared — student submissions are compared against this |
+- Login page → click **"Register here"**
 
 ---
 
 ## Troubleshooting
 
-**IP address changed after restart:**
-- Run `ipconfig` again on the server PC
-- Update `.env` with the new IP
-- Delete the `dist/` folder
-- Run `start.bat` again (it will rebuild automatically)
+**Server not accessible from other PCs:**
+- Make sure `start.bat` has been run and the background window is open
+- All PCs must be on the same WiFi/LAN
+- Check the correct IP from the list shown by `start.bat`
 
-**Students cannot connect:**
-- Make sure `start.bat` window is open on the server PC
-- Make sure all PCs are on the **same WiFi network**
-- Double check the IP in the browser matches the server PC's IP
+**IP address changed (after reconnecting to WiFi):**
+- Run `start.bat` again — it will show the new IP
+- No rebuild needed (relative URLs are used)
 
-**First run downloads AI model (~500MB) — this is normal:**
-- Happens once only, future runs are instant
-
-**`start.bat` shows Python/Node.js not found:**
-- Install Python from https://python.org
-- Install Node.js from https://nodejs.org
+**GPU install failed / want to retry:**
+- Delete `.venv` folder
 - Run `start.bat` again
+
+**`stop.bat` did not stop the server:**
+- Open Task Manager → find `python.exe` → End Task
+
+**First run is slow (~500MB download):**
+- AI model downloads once and is cached in `backend/model_cache/`
+- All future runs are fully offline and instant
 
 ---
 
@@ -164,17 +203,21 @@ In the **Repository Manager** tab, teachers see two upload options:
 
 ```
 project/
-├── start.bat             ← Double-click to start (use this every time)
-├── .env                  ← Set server IP here
+├── start.bat             ← Double-click to start server
+├── stop.bat              ← Double-click to stop server
+├── .env                  ← API URL config (leave empty for auto)
 ├── dist/                 ← Built frontend (auto-generated)
 ├── backend/
-│   ├── main.py           ← FastAPI server
-│   ├── database.py       ← User accounts
-│   ├── document_store.py ← Document storage
+│   ├── main.py           ← FastAPI server + frontend serving
+│   ├── database.py       ← User accounts + saved job results
+│   ├── document_store.py ← Document repository
+│   ├── embedding_pipeline.py  ← AI similarity (GPU/CPU auto)
+│   ├── faiss_index.py    ← Fast vector search
+│   ├── model_cache/      ← Downloaded AI model (offline)
 │   └── requirements.txt  ← Python dependencies
-├── src/                  ← React frontend source code
+├── src/                  ← React frontend source
 ├── auth.db               ← User database
-└── documents.db          ← Document repository
+└── documents.db          ← Document repository database
 ```
 
 ---
@@ -191,13 +234,13 @@ project/
 
 ---
 
-## How the Similarity Detection Works
+## How the AI Detection Works
 
-The system uses **4 algorithms** combined:
+Four algorithms combined:
 
 | Algorithm | Weight | Detects |
 |-----------|--------|---------|
-| AI Semantic (deep learning) | 60% | Paraphrasing, same meaning different words |
+| AI Semantic (deep learning) | 60% | Paraphrasing, same meaning |
 | Lexical (word overlap) | 15% | Direct copy-paste |
 | Winnowing (MOSS algorithm) | 15% | Structural copying |
 | Fingerprint (n-gram) | 10% | Partial phrase copying |

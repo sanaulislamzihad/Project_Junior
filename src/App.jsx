@@ -51,10 +51,38 @@ function MainApp() {
   const [checkText, setCheckText] = useState('');
   const [stateHydrated, setStateHydrated] = useState(false);
   const [restoring, setRestoring] = useState(false);
+  const [selectedModel, setSelectedModel] = useState('default');
+  const [modelAvailability, setModelAvailability] = useState({});
+
+  // Fetch which models are cached on this server
+  useEffect(() => {
+    axios.get(`${API_BASE}/models/status`)
+      .then(res => setModelAvailability(res.data?.models || {}))
+      .catch(() => {});
+  }, []);
 
   // QUEUE STATE
   const [checkQueue, setCheckQueue] = useState([]);
   const [viewingResultId, setViewingResultId] = useState(null);
+  const [collapsedFolders, setCollapsedFolders] = useState(new Set());
+
+  // Group queue items: folders first, then individual items
+  const groupedQueue = useMemo(() => {
+    const groups = [];
+    const folderMap = {};
+    checkQueue.forEach(item => {
+      if (item.folderId) {
+        if (!folderMap[item.folderId]) {
+          folderMap[item.folderId] = { type: 'folder', folderId: item.folderId, folderName: item.folderName, items: [] };
+          groups.push(folderMap[item.folderId]);
+        }
+        folderMap[item.folderId].items.push(item);
+      } else {
+        groups.push({ type: 'single', item });
+      }
+    });
+    return groups;
+  }, [checkQueue]);
 
   useEffect(() => {
     const roleDefaultMode = 'repo';
@@ -241,6 +269,7 @@ function MainApp() {
     formData.append('role', user?.role || 'teacher');
     formData.append('add_to_repo', add_to_repo);
     if (user?.id) formData.append('user_id', String(user.id));
+    formData.append('model_name', queueItem?.modelName || 'default');
     
     try {
       const response = await axios.post(`${API_BASE}/analyze`, formData, {
@@ -249,7 +278,15 @@ function MainApp() {
       setCheckQueue(q => q.map(item => item.id === id ? { ...item, jobId: response.data.job_id } : item));
     } catch (error) {
       console.error("Error checking document:", error);
-      const msg = error.response?.data?.detail || error.message || "Backend not reachable.";
+      const raw = error.response?.data?.detail || error.message || "Backend not reachable.";
+      let msg = raw;
+      if (typeof raw === 'string' && raw.startsWith('MODEL_NOT_AVAILABLE:')) {
+        const parts = raw.split(':');
+        const modelKey = parts[1] || 'paraphrase';
+        msg = `The "${modelKey === 'paraphrase' ? 'Research / Paraphrase' : modelKey}" model is not downloaded on this server. Ask your admin to download it, or switch to General Purpose model.`;
+        // Refresh availability so the button becomes disabled
+        axios.get(`${API_BASE}/models/status`).then(res => setModelAvailability(res.data?.models || {})).catch(() => {});
+      }
       setCheckQueue(q => q.map(item => item.id === id ? { ...item, status: 'error', error: msg } : item));
     }
   };
@@ -266,16 +303,29 @@ function MainApp() {
   };
 
   const handleCheckFiles = (files) => {
-    const newItems = files.map(file => ({
-      id: crypto.randomUUID(),
-      file,
-      directText: null,
-      status: 'pending',
-      jobId: null,
-      result: null,
-      error: null
-    }));
-    setCheckQueue(q => [...q, ...newItems]);
+    // Detect top-level folder name from path
+    const getFolderName = (file) => {
+      const path = file.customPath || file.webkitRelativePath || '';
+      if (path && path.includes('/')) return path.split('/')[0];
+      return null;
+    };
+    // Assign a new folderId per unique folder name in this batch
+    const batchFolderIds = {};
+    const newItems = files.map(file => {
+      const folderName = getFolderName(file);
+      let folderId = null;
+      if (folderName) {
+        if (!batchFolderIds[folderName]) batchFolderIds[folderName] = crypto.randomUUID();
+        folderId = batchFolderIds[folderName];
+      }
+      return { id: crypto.randomUUID(), file, directText: null, status: 'pending', jobId: null, result: null, error: null, modelName: selectedModel, folderId, folderName };
+    });
+    setCheckQueue(q => {
+      // Reuse existing folderId if same folder name already in queue
+      const existingIds = {};
+      q.forEach(item => { if (item.folderName && item.folderId) existingIds[item.folderName] = item.folderId; });
+      return [...q, ...newItems.map(item => item.folderName && existingIds[item.folderName] ? { ...item, folderId: existingIds[item.folderName] } : item)];
+    });
     setAppMode('queue');
   };
 
@@ -292,7 +342,8 @@ function MainApp() {
       status: 'pending',
       jobId: null,
       result: null,
-      error: null
+      error: null,
+      modelName: selectedModel,
     };
     setCheckQueue(q => [...q, newItem]);
     setAppMode('queue');
@@ -349,7 +400,8 @@ function MainApp() {
       result: null,
       error: null,
       isRepoUpload: true,
-      repoTarget: user?.role === 'admin' ? 'university' : 'personal'
+      repoTarget: user?.role === 'admin' ? 'university' : 'personal',
+      modelName: selectedModel,
     }));
     setCheckQueue(q => [...q, ...newItems]);
     setAppMode('queue');
@@ -603,6 +655,56 @@ function MainApp() {
                               </div>
                             </div>
 
+                            {/* Model Selection — visible to teacher and student */}
+                            {user?.role !== 'admin' && (
+                              <div className="px-8 py-5 border-b border-slate-100 bg-slate-50/30">
+                                <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">AI Detection Model</p>
+                                <div className="flex gap-3 flex-wrap">
+                                  {[
+                                    { id: 'default', label: 'General Purpose', sub: 'all-mpnet-base-v2', badge: null },
+                                    { id: 'paraphrase', label: 'Paraphrase', sub: 'Detects same ideas in different words', badge: null },
+                                  ].map(m => {
+                                    const avail = modelAvailability[m.id];
+                                    const notCached = avail !== undefined && avail.cached === false;
+                                    return (
+                                      <button
+                                        key={m.id}
+                                        type="button"
+                                        onClick={() => setSelectedModel(m.id)}
+                                        className={`flex items-start gap-3 px-5 py-3.5 rounded-2xl border-2 text-left transition-all flex-1 min-w-[180px] ${selectedModel === m.id ? 'border-brand-500 bg-white shadow-md ring-4 ring-brand-50' : 'border-slate-200 hover:border-slate-300 bg-slate-50/50'}`}
+                                      >
+                                        <div className={`mt-0.5 w-5 h-5 rounded-full flex items-center justify-center shrink-0 border-2 transition-colors ${selectedModel === m.id ? 'border-brand-500 bg-brand-500' : 'border-slate-300 bg-white'}`}>
+                                          {selectedModel === m.id && <div className="w-2 h-2 rounded-full bg-white" />}
+                                        </div>
+                                        <div>
+                                          <span className={`font-black text-sm block ${selectedModel === m.id ? 'text-brand-700' : 'text-slate-600'}`}>
+                                            {m.label}
+                                            {m.badge && <span className="text-[10px] font-bold bg-violet-100 text-violet-700 px-1.5 py-0.5 rounded-md ml-1">{m.badge}</span>}
+                                            {notCached && <span className="text-[10px] font-bold bg-orange-100 text-orange-600 px-1.5 py-0.5 rounded-md ml-1">Needs internet 1st use</span>}
+                                          </span>
+                                          <span className={`text-xs font-medium leading-snug ${selectedModel === m.id ? 'text-brand-600/70' : 'text-slate-400'}`}>{m.sub}</span>
+                                        </div>
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                                <div className={`mt-3 rounded-xl border px-4 py-3 flex gap-3 items-start ${selectedModel === 'paraphrase' ? 'bg-amber-50 border-amber-200' : 'bg-blue-50 border-blue-200'}`}>
+                                  <AlertTriangle className={`w-4 h-4 shrink-0 mt-0.5 ${selectedModel === 'paraphrase' ? 'text-amber-500' : 'text-blue-500'}`} />
+                                  <div className="text-xs font-medium leading-relaxed">
+                                    {selectedModel === 'paraphrase' ? (
+                                      <span className="text-amber-700">
+                                        <strong>Important:</strong> You selected <strong>Paraphrase</strong> <span className="font-mono text-[10px] bg-amber-100 px-1 py-0.5 rounded">paraphrase-mpnet-base-v2</span> model. Only documents <strong>uploaded with the same model</strong> will be matched. Best for detecting same ideas in different words.
+                                      </span>
+                                    ) : (
+                                      <span className="text-blue-700">
+                                        <strong>Note:</strong> You selected <strong>General Purpose</strong> <span className="font-mono text-[10px] bg-blue-100 px-1 py-0.5 rounded">all-mpnet-base-v2</span> model. Only documents <strong>uploaded with the same model</strong> will be matched. Switch to <strong>Paraphrase</strong> for research paper paraphrase detection.
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+                            )}
+
                             <div className="flex-1 p-8">
                               <div className="mb-5 flex justify-center">
                                 <div className="inline-flex p-1 rounded-2xl border border-slate-200 bg-slate-100">
@@ -640,26 +742,44 @@ function MainApp() {
                                   }}
                                   className="w-full h-full"
                                 >
+                                  {/* File picker — individual files */}
                                   <input type="file" id="check-file-upload" multiple style={{ display: 'none' }} onChange={(e) => {
                                     const files = Array.from(e.target.files || []).filter(f => f.name.toLowerCase().endsWith('.pdf') || f.name.toLowerCase().endsWith('.pptx'));
                                     if (files.length > 0) handleCheckFiles(files);
                                     e.target.value = '';
                                   }} accept=".pdf,.pptx" />
-                                  
-                                  <label htmlFor="check-file-upload" className={`relative overflow-hidden group flex flex-col items-center justify-center h-72 w-full rounded-2xl border-2 border-dashed transition-all duration-300 ease-out cursor-pointer ${checkDragActive ? 'border-brand-500 bg-brand-50/50 scale-[1.01] shadow-inner' : 'border-slate-200 hover:border-brand-400 hover:bg-slate-50/30'}`}>
-                                    <motion.div key="idle" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} className="flex flex-col items-center z-10 w-full">
-                                      <div className={`p-6 rounded-3xl mb-4 transition-all duration-300 ${checkDragActive ? 'bg-brand-100 text-brand-600 scale-110 shadow-lg' : 'bg-slate-50 text-slate-400 group-hover:bg-white group-hover:text-brand-500 group-hover:shadow-xl group-hover:-translate-y-2'}`}>
+                                  {/* Folder picker — groups by folder name */}
+                                  <input type="file" id="check-folder-upload" multiple style={{ display: 'none' }}
+                                    // @ts-ignore
+                                    webkitdirectory="" mozdirectory=""
+                                    onChange={(e) => {
+                                      const files = Array.from(e.target.files || []).filter(f => f.name.toLowerCase().endsWith('.pdf') || f.name.toLowerCase().endsWith('.pptx'));
+                                      if (files.length > 0) handleCheckFiles(files);
+                                      e.target.value = '';
+                                    }}
+                                  />
+
+                                  <div className={`relative overflow-hidden flex flex-col items-center justify-center h-72 w-full rounded-2xl border-2 border-dashed transition-all duration-300 ease-out ${checkDragActive ? 'border-brand-500 bg-brand-50/50 scale-[1.01] shadow-inner' : 'border-slate-200 hover:border-brand-400 hover:bg-slate-50/30'}`}>
+                                    <motion.div key="idle" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} className="flex flex-col items-center z-10 w-full px-4">
+                                      <div className={`p-6 rounded-3xl mb-4 transition-all duration-300 ${checkDragActive ? 'bg-brand-100 text-brand-600 scale-110 shadow-lg' : 'bg-slate-50 text-slate-400'}`}>
                                         <Upload className="w-10 h-10" />
                                       </div>
-                                      <h3 className="text-xl font-black text-slate-800 mb-2">Drop files or folders here</h3>
-                                      <p className="text-slate-500 text-sm font-medium">or <span className="text-brand-600 font-bold hover:underline underline-offset-4">select multiple files</span></p>
-                                      <div className="mt-8 flex gap-4 text-xs text-slate-400 font-mono font-bold uppercase tracking-tighter">
+                                      <h3 className="text-xl font-black text-slate-800 mb-4">Drop files or folders here</h3>
+                                      <div className="flex gap-3">
+                                        <label htmlFor="check-file-upload" className="cursor-pointer px-5 py-2.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-black rounded-xl shadow-md transition-all flex items-center gap-2">
+                                          <FileText className="w-4 h-4" /> Select Files
+                                        </label>
+                                        <label htmlFor="check-folder-upload" className="cursor-pointer px-5 py-2.5 bg-white hover:bg-brand-50 text-brand-700 text-sm font-black rounded-xl border-2 border-brand-200 transition-all flex items-center gap-2">
+                                          <FolderOpen className="w-4 h-4" /> Select Folder
+                                        </label>
+                                      </div>
+                                      <div className="mt-6 flex gap-3 text-xs text-slate-400 font-mono font-bold uppercase tracking-tighter">
                                         <span className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 shadow-sm">Multiple PDFs</span>
                                         <span className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 shadow-sm">Folders</span>
                                         <span className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 shadow-sm">Sequential</span>
                                       </div>
                                     </motion.div>
-                                  </label>
+                                  </div>
                                 </form>
                               ) : (
                                 <div className="w-full">
@@ -708,41 +828,48 @@ function MainApp() {
                       </p>
                     </div>
                     {checkQueue.length > 0 && (
-                      <div className="flex items-center gap-4">
+                      <div className="flex items-center gap-3 flex-wrap">
                         <div className="px-4 py-2.5 bg-brand-50 text-brand-700 font-bold rounded-2xl border border-brand-100 flex items-center gap-2 shadow-sm">
                           {checkQueue.filter(i => i.status !== 'completed' && i.status !== 'error').length > 0 && <div className="w-4 h-4 rounded-full border-2 border-brand-500 border-t-transparent animate-spin"/>}
                           {checkQueue.filter(i => i.status === 'completed').length} / {checkQueue.length} Finished
                         </div>
-                        <input type="file" id="add-more-upload-queue-list" multiple style={{ display: 'none' }} onChange={(e) => {
+                        {/* Add files (flat) */}
+                        <input type="file" id="add-more-files-queue" multiple style={{ display: 'none' }} onChange={(e) => {
                           const files = Array.from(e.target.files || []).filter(f => f.name.toLowerCase().endsWith('.pdf') || f.name.toLowerCase().endsWith('.pptx'));
                           if (files.length > 0) handleCheckFiles(files);
                           e.target.value = '';
                         }} accept=".pdf,.pptx" />
-                        <button
+                        {/* Add folder */}
+                        <input type="file" id="add-folder-queue" multiple style={{ display: 'none' }}
+                          // @ts-ignore
+                          webkitdirectory="" mozdirectory=""
+                          onChange={(e) => {
+                            const files = Array.from(e.target.files || []).filter(f => f.name.toLowerCase().endsWith('.pdf') || f.name.toLowerCase().endsWith('.pptx'));
+                            if (files.length > 0) handleCheckFiles(files);
+                            e.target.value = '';
+                          }}
+                        />
+<button
                           onClick={() => {
                             const hasActive = checkQueue.some(i => i.status === 'analyzing' || i.status === 'pending');
-                            if (hasActive) {
-                              if (!window.confirm("Some files are still being processed. Are you sure you want to clear the entire queue?")) return;
-                            }
-                            // Also delete saved results from DB
+                            if (hasActive && !window.confirm("Some files are still being processed. Clear queue?")) return;
                             checkQueue.forEach(i => {
                               if (i.savedFromDb && i.jobId && user?.id && user?.token) {
-                                axios.delete(`${API_BASE}/jobs/saved/${i.jobId}?user_id=${user.id}`, {
-                                  headers: { Authorization: `Bearer ${user.token}` }
-                                }).catch(() => {});
+                                axios.delete(`${API_BASE}/jobs/saved/${i.jobId}?user_id=${user.id}`, { headers: { Authorization: `Bearer ${user.token}` } }).catch(() => {});
                               }
                             });
                             setCheckQueue([]);
                             setAppMode('repo');
                           }}
-                          className="px-6 py-3 bg-white border-2 border-slate-200 text-slate-500 font-bold rounded-2xl hover:bg-slate-50 hover:text-red-500 hover:border-red-100 transition-all flex items-center gap-2 shadow-sm"
+                          className="px-5 py-3 bg-white border-2 border-slate-200 text-slate-500 font-bold rounded-2xl hover:text-red-500 hover:border-red-100 transition-all flex items-center gap-2 shadow-sm"
                         >
-                          <Trash2 className="w-4 h-4" />
-                          Clear Queue
+                          <Trash2 className="w-4 h-4" /> Clear All
                         </button>
-                        <label htmlFor="add-more-upload-queue-list" className="cursor-pointer bg-brand-600 hover:bg-brand-700 text-white text-sm font-black px-6 py-3 rounded-2xl shadow-lg shadow-brand-200 transition-all flex items-center gap-2">
-                          <Upload className="w-4 h-4" />
-                          Add Documents
+                        <label htmlFor="add-folder-queue" className="cursor-pointer bg-white border-2 border-brand-200 text-brand-700 text-sm font-black px-5 py-3 rounded-2xl transition-all flex items-center gap-2 hover:bg-brand-50">
+                          <FolderOpen className="w-4 h-4" /> Add Folder
+                        </label>
+                        <label htmlFor="add-more-files-queue" className="cursor-pointer bg-brand-600 hover:bg-brand-700 text-white text-sm font-black px-5 py-3 rounded-2xl shadow-lg shadow-brand-200 transition-all flex items-center gap-2">
+                          <Upload className="w-4 h-4" /> Add Files
                         </label>
                       </div>
                     )}
@@ -750,43 +877,143 @@ function MainApp() {
 
                   {checkQueue.length > 0 ? (
                     <div className="space-y-4 relative z-10">
-                      {checkQueue.map((item, idx) => (
-                        <motion.div 
-                          key={item.id} 
+                      {groupedQueue.map((group) => {
+                        if (group.type === 'folder') {
+                          const { folderId, folderName, items } = group;
+                          const collapsed = collapsedFolders.has(folderId);
+                          const done = items.filter(i => i.status === 'completed').length;
+                          const errors = items.filter(i => i.status === 'error').length;
+                          const active = items.some(i => i.status === 'analyzing' || i.status === 'pending');
+                          return (
+                            <motion.div key={folderId} initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} className="bg-white rounded-[2rem] border-2 border-brand-100 shadow-sm overflow-hidden">
+                              {/* Folder Header */}
+                              <div className="flex items-center gap-4 px-6 py-4 bg-brand-50/60 border-b border-brand-100">
+                                <button
+                                  onClick={() => setCollapsedFolders(prev => { const s = new Set(prev); s.has(folderId) ? s.delete(folderId) : s.add(folderId); return s; })}
+                                  className="w-9 h-9 rounded-xl bg-white border border-brand-200 flex items-center justify-center text-brand-500 hover:bg-brand-100 transition-all shrink-0"
+                                >
+                                  <ChevronRight className={`w-4 h-4 transition-transform ${collapsed ? '' : 'rotate-90'}`} />
+                                </button>
+                                <FolderOpen className="w-5 h-5 text-brand-500 shrink-0" />
+                                <div className="flex-1 min-w-0">
+                                  <h3 className="font-black text-slate-800 text-base truncate">{folderName}</h3>
+                                  <p className="text-xs text-slate-400 font-medium">{items.length} files · {done} done{errors > 0 ? ` · ${errors} failed` : ''}</p>
+                                </div>
+                                {active && <div className="w-4 h-4 rounded-full border-2 border-brand-500 border-t-transparent animate-spin shrink-0" />}
+                                {done === items.length && !active && <CheckCircle className="w-5 h-5 text-emerald-500 shrink-0" />}
+                                {/* Add more files to this folder */}
+                                <input type="file" id={`add-folder-more-${folderId}`} multiple accept=".pdf,.pptx" style={{ display: 'none' }}
+                                  onChange={(e) => {
+                                    const files = Array.from(e.target.files || []).filter(f => f.name.toLowerCase().endsWith('.pdf') || f.name.toLowerCase().endsWith('.pptx'));
+                                    if (files.length > 0) {
+                                      const newItems = files.map(file => ({ id: crypto.randomUUID(), file, directText: null, status: 'pending', jobId: null, result: null, error: null, modelName: selectedModel, folderId, folderName }));
+                                      setCheckQueue(q => [...q, ...newItems]);
+                                    }
+                                    e.target.value = '';
+                                  }}
+                                />
+                                <label htmlFor={`add-folder-more-${folderId}`} className="cursor-pointer text-xs font-bold text-brand-600 hover:text-brand-800 px-3 py-1.5 rounded-lg hover:bg-brand-100 transition-all flex items-center gap-1 shrink-0">
+                                  <Upload className="w-3.5 h-3.5" /> Add
+                                </label>
+                                <button
+                                  onClick={() => {
+                                    const hasActive = items.some(i => i.status === 'analyzing');
+                                    if (hasActive && !window.confirm(`Remove entire "${folderName}" folder?`)) return;
+                                    items.forEach(i => {
+                                      if (i.savedFromDb && i.jobId && user?.id && user?.token) {
+                                        axios.delete(`${API_BASE}/jobs/saved/${i.jobId}?user_id=${user.id}`, { headers: { Authorization: `Bearer ${user.token}` } }).catch(() => {});
+                                      }
+                                    });
+                                    setCheckQueue(q => q.filter(i => i.folderId !== folderId));
+                                    setCollapsedFolders(prev => { const s = new Set(prev); s.delete(folderId); return s; });
+                                  }}
+                                  className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all shrink-0"
+                                  title="Remove folder"
+                                >
+                                  <Trash2 className="w-4 h-4" />
+                                </button>
+                              </div>
+                              {/* Folder Items */}
+                              {!collapsed && (
+                                <div className="divide-y divide-slate-100">
+                                  {items.map(item => {
+                                    const canRetry = item.status === 'error';
+                                    const canDelete = item.status !== 'analyzing';
+                                    return (
+                                      <div key={item.id} className="flex items-center gap-4 px-6 py-3.5 hover:bg-slate-50/50 transition-colors">
+                                        {/* status dot */}
+                                        <div className={`w-2 h-2 rounded-full shrink-0 ${item.status === 'completed' ? 'bg-emerald-400' : item.status === 'error' ? 'bg-red-400' : item.status === 'analyzing' ? 'bg-brand-400 animate-pulse' : 'bg-slate-300'}`} />
+                                        <FileText className="w-4 h-4 text-slate-400 shrink-0" />
+                                        <div className="flex-1 min-w-0">
+                                          <p className="text-sm font-bold text-slate-700 truncate">{item.file?.name || item.result?.filename || "Direct Text"}</p>
+                                          {item.status === 'analyzing' && item.jobId && (
+                                            <div className="mt-1">
+                                              <AnalyzingProgress jobId={item.jobId} onComplete={(result) => handleItemComplete(item.id, result)} title="" subtitle="" hideTitle compact />
+                                            </div>
+                                          )}
+                                          {item.status === 'error' && <p className="text-xs text-red-500 font-medium mt-0.5 truncate">{item.error}</p>}
+                                          {item.status === 'pending' && <p className="text-xs text-slate-400 font-medium mt-0.5">Waiting...</p>}
+                                        </div>
+                                        <div className="flex items-center gap-1 shrink-0">
+                                          {item.status === 'completed' && !item.isRepoUpload && (
+                                            <button onClick={() => setViewingResultId(item.id)} className="text-xs font-bold text-brand-600 hover:text-brand-800 px-3 py-1.5 rounded-lg hover:bg-brand-50 transition-all flex items-center gap-1">
+                                              Report <ArrowRightLeft className="w-3 h-3" />
+                                            </button>
+                                          )}
+                                          {item.status === 'completed' && item.isRepoUpload && !item.result?.duplicate && !item.result?.warning && (
+                                            <span className="text-xs font-bold text-emerald-600 flex items-center gap-1"><CheckCircle className="w-3.5 h-3.5" /> Added</span>
+                                          )}
+                                          {canRetry && (
+                                            <button onClick={() => setCheckQueue(prev => prev.map(i => i.id === item.id ? { ...i, status: 'pending', error: null, jobId: null } : i))}
+                                              className="p-1.5 text-slate-300 hover:text-brand-500 hover:bg-brand-50 rounded-lg transition-all" title="Retry">
+                                              <ChevronRight className="w-4 h-4" />
+                                            </button>
+                                          )}
+                                          {canDelete && (
+                                            <button onClick={() => setCheckQueue(prev => prev.filter(i => i.id !== item.id))}
+                                              className="p-1.5 text-slate-300 hover:text-red-400 hover:bg-red-50 rounded-lg transition-all" title="Remove">
+                                              <Trash2 className="w-4 h-4" />
+                                            </button>
+                                          )}
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
+                            </motion.div>
+                          );
+                        }
+                        // Single (non-folder) item
+                        const item = group.item;
+                        const isRepo = !!item.isRepoUpload;
+                        const canRetry = item.status === 'error';
+                        const canDelete = item.status !== 'analyzing';
+                        return (
+                        <motion.div
+                          key={item.id}
                           initial={{ opacity: 0, x: -10 }}
                           animate={{ opacity: 1, x: 0 }}
-                          className="bg-white rounded-[2rem] border border-slate-200 shadow-sm hover:shadow-xl transition-all duration-300 p-6 flex flex-col md:flex-row md:items-center gap-6 group"
+                          className={`bg-white rounded-[2rem] border shadow-sm hover:shadow-xl transition-all duration-300 p-6 flex flex-col md:flex-row md:items-center gap-6 group ${isRepo ? 'border-teal-200' : 'border-slate-200'}`}
                         >
-                          {/* Status Icon */}
-                          <div className={`w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 border-2 transition-all ${item.status === 'completed' ? 'bg-emerald-50 border-emerald-100 text-emerald-500' : item.status === 'error' ? 'bg-red-50 border-red-100 text-red-500' : 'bg-slate-50 border-slate-100 text-slate-400 group-hover:scale-110'}`}>
-                            <FileText className="w-7 h-7" />
+                          <div className={`w-14 h-14 rounded-2xl flex items-center justify-center shrink-0 border-2 transition-all ${item.status === 'completed' ? 'bg-emerald-50 border-emerald-100 text-emerald-500' : item.status === 'error' ? 'bg-red-50 border-red-100 text-red-500' : isRepo ? 'bg-teal-50 border-teal-100 text-teal-400' : 'bg-slate-50 border-slate-100 text-slate-400 group-hover:scale-110'}`}>
+                            {isRepo ? <Database className="w-7 h-7" /> : <FileSearch className="w-7 h-7" />}
                           </div>
-
-                          {/* File Info */}
                           <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-3 mb-1">
-                              <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Scan ID: {item.id.slice(0, 8)}</span>
+                            <div className="flex items-center gap-2 mb-1 flex-wrap">
+                              {isRepo ? <span className="text-[10px] bg-teal-100 text-teal-700 font-bold px-2 py-0.5 rounded-full">Repo Upload</span>
+                                      : <span className="text-[10px] bg-brand-100 text-brand-700 font-bold px-2 py-0.5 rounded-full">Plagiarism Check</span>}
+                              {item.savedFromDb && <span className="text-[10px] bg-amber-100 text-amber-700 font-bold px-2 py-0.5 rounded-full">Saved</span>}
+                              {item.modelName && item.modelName !== 'default' && <span className="text-[10px] bg-violet-100 text-violet-700 font-bold px-2 py-0.5 rounded-full">Paraphrase</span>}
                               {item.status === 'analyzing' && <span className="w-2 h-2 rounded-full bg-brand-500 animate-pulse" />}
-                              {item.isRepoUpload && (
-                                <span className="text-[10px] bg-brand-100 text-brand-700 font-bold px-2 py-0.5 rounded-full">Repo Upload</span>
-                              )}
-                              {item.savedFromDb && (
-                                <span className="text-[10px] bg-amber-100 text-amber-700 font-bold px-2 py-0.5 rounded-full">Saved Result</span>
-                              )}
                             </div>
-                            <h3 className="font-black text-slate-800 text-xl truncate" title={item.file?.name || item.result?.filename || "Direct Text Input"}>
-                              {item.file?.name || item.result?.filename || "Direct Text Input"}
-                            </h3>
-                            
-                            {/* Inline Progress for active jobs */}
+                            <h3 className="font-black text-slate-800 text-xl truncate">{item.file?.name || item.result?.filename || "Direct Text Input"}</h3>
                             {item.status === 'analyzing' && item.jobId && (
                               <div className="mt-4 w-full max-w-2xl">
                                 <AnalyzingProgress jobId={item.jobId} onComplete={(result) => handleItemComplete(item.id, result)} title="" subtitle="" hideTitle />
                               </div>
                             )}
-                            {item.status === 'error' && (
-                              <p className="text-sm font-bold text-red-500 mt-2 bg-red-50 px-3 py-1.5 rounded-lg inline-block border border-red-100">{item.error || "An error occurred during analysis."}</p>
-                            )}
+                            {item.status === 'error' && <p className="text-sm font-bold text-red-500 mt-2 bg-red-50 px-3 py-1.5 rounded-lg inline-block border border-red-100">{item.error}</p>}
                             {item.status === 'pending' && (
                               <div className="flex items-center gap-2 mt-2 text-slate-400">
                                 <div className="w-4 h-4 rounded-full border-2 border-slate-200 border-t-slate-400 animate-spin" />
@@ -794,45 +1021,54 @@ function MainApp() {
                               </div>
                             )}
                           </div>
-
-                          {/* Action Area */}
-                          <div className="flex items-center justify-end gap-3 min-w-[140px]">
-                            {item.status === 'completed' && !item.isRepoUpload && (
-                              <button 
-                                onClick={(e) => { e.preventDefault(); setViewingResultId(item.id); }} 
-                                className="px-6 py-3 bg-brand-600 hover:bg-brand-700 text-white font-black rounded-2xl shadow-lg shadow-brand-100 transition-all flex items-center gap-2 hover:-translate-x-1"
-                              >
-                                View Report
-                                <ArrowRightLeft className="w-4 h-4" />
+                          <div className="flex items-center justify-end gap-2 shrink-0">
+                            {item.status === 'completed' && !isRepo && (
+                              <button onClick={() => setViewingResultId(item.id)} className="px-6 py-3 bg-brand-600 hover:bg-brand-700 text-white font-black rounded-2xl shadow-lg shadow-brand-100 transition-all flex items-center gap-2">
+                                View Report <ArrowRightLeft className="w-4 h-4" />
                               </button>
                             )}
-                            {item.status === 'completed' && item.isRepoUpload && (
-                                <div className="px-4 py-2 bg-emerald-50 text-emerald-700 font-bold rounded-2xl border border-emerald-100 flex items-center gap-2">
-                                  <CheckCircle className="w-4 h-4" /> Added
-                                </div>
+                            {item.status === 'completed' && isRepo && !item.result?.duplicate && !item.result?.warning && (
+                              <div className="px-4 py-2 bg-emerald-50 text-emerald-700 font-bold rounded-2xl border border-emerald-100 flex items-center gap-2">
+                                <CheckCircle className="w-4 h-4" /> Added
+                              </div>
                             )}
-                            {item.status === 'pending' && (
-                              <button 
-                                onClick={() => setCheckQueue(prev => prev.filter(i => i.id !== item.id))}
-                                className="p-3 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all"
-                                title="Remove from queue"
-                              >
-                                <LogOut className="w-5 h-5 rotate-180" />
-                              </button>
+                            {item.status === 'completed' && (item.result?.duplicate || item.result?.warning) && (
+                              <div className="px-4 py-2 bg-amber-50 text-amber-700 font-bold rounded-2xl border border-amber-200 flex items-center gap-2 max-w-xs text-xs">
+                                <AlertTriangle className="w-4 h-4 shrink-0" />
+                                {item.result?.duplicate ? 'Already exists — skipped' : item.result?.warning}
+                              </div>
                             )}
                             {item.status === 'analyzing' && (
                               <div className="text-right">
-                                 <div className="text-xs font-black text-brand-600 uppercase tracking-widest mb-1">Scanning...</div>
-                                 <div className="flex gap-1 justify-end">
-                                   <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-bounce [animation-delay:-0.3s]" />
-                                   <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-bounce [animation-delay:-0.15s]" />
-                                   <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-bounce" />
-                                 </div>
+                                <div className="text-xs font-black text-brand-600 uppercase tracking-widest mb-1">Processing...</div>
+                                <div className="flex gap-1 justify-end">
+                                  <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-bounce [animation-delay:-0.3s]" />
+                                  <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-bounce [animation-delay:-0.15s]" />
+                                  <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-bounce" />
+                                </div>
                               </div>
+                            )}
+                            {canRetry && (
+                              <button onClick={() => setCheckQueue(prev => prev.map(i => i.id === item.id ? { ...i, status: 'pending', error: null, jobId: null } : i))}
+                                className="p-3 text-slate-400 hover:text-brand-600 hover:bg-brand-50 rounded-xl transition-all border border-slate-200 hover:border-brand-200" title="Retry">
+                                <ChevronRight className="w-5 h-5" />
+                              </button>
+                            )}
+                            {canDelete && (
+                              <button onClick={() => {
+                                  if (item.savedFromDb && item.jobId && user?.id && user?.token) {
+                                    axios.delete(`${API_BASE}/jobs/saved/${item.jobId}?user_id=${user.id}`, { headers: { Authorization: `Bearer ${user.token}` } }).catch(() => {});
+                                  }
+                                  setCheckQueue(prev => prev.filter(i => i.id !== item.id));
+                                }}
+                                className="p-3 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all border border-slate-200 hover:border-red-100" title="Remove">
+                                <Trash2 className="w-5 h-5" />
+                              </button>
                             )}
                           </div>
                         </motion.div>
-                      ))}
+                        );
+                      })}
                     </div>
                   ) : (
                     <div className="w-full text-center p-20 bg-white rounded-[3rem] border border-slate-200 shadow-sm mt-8 relative overflow-hidden">
@@ -881,6 +1117,43 @@ function MainApp() {
                             </div>
                           </div>
                         )}
+                        {/* Model selector for repo uploads */}
+                        <div className="px-6 pt-4 pb-1">
+                          <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">AI Model</p>
+                          <div className="flex gap-2">
+                            {[
+                              { id: 'default', label: 'General', sub: 'all-mpnet-base-v2' },
+                              { id: 'paraphrase', label: 'Paraphrase', sub: 'paraphrase-mpnet-base-v2' },
+                            ].map(m => {
+                              const avail = modelAvailability[m.id];
+                              const notCached = avail !== undefined && avail.cached === false;
+                              return (
+                                <button
+                                  key={m.id}
+                                  type="button"
+                                  onClick={() => setSelectedModel(m.id)}
+                                  className={`flex-1 flex items-center gap-2 px-3 py-2.5 rounded-xl border-2 text-left transition-all ${selectedModel === m.id ? 'border-brand-500 bg-brand-50 shadow-sm' : 'border-slate-200 hover:border-slate-300 bg-white'}`}
+                                >
+                                  <div className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 border-2 transition-colors ${selectedModel === m.id ? 'border-brand-500 bg-brand-500' : 'border-slate-300 bg-white'}`}>
+                                    {selectedModel === m.id && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                                  </div>
+                                  <div>
+                                    <span className={`text-xs font-black block ${selectedModel === m.id ? 'text-brand-700' : 'text-slate-600'}`}>{m.label}</span>
+                                    <span className="text-[10px] font-medium text-slate-400">{notCached ? 'Needs internet 1st use' : m.sub}</span>
+                                  </div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <div className={`mt-2 mx-0 rounded-xl border px-3 py-2.5 flex gap-2 items-start ${selectedModel === 'paraphrase' ? 'bg-amber-50 border-amber-200' : 'bg-blue-50 border-blue-200'}`}>
+                            <AlertTriangle className={`w-3.5 h-3.5 shrink-0 mt-0.5 ${selectedModel === 'paraphrase' ? 'text-amber-500' : 'text-blue-400'}`} />
+                            <p className={`text-[11px] font-medium leading-snug ${selectedModel === 'paraphrase' ? 'text-amber-700' : 'text-blue-700'}`}>
+                              {selectedModel === 'paraphrase'
+                                ? 'Documents uploaded here will only match when checked using Paraphrase model. Use the same model in Plagiarism Check.'
+                                : 'Documents uploaded here will only match when checked using General Purpose model. Use the same model in Plagiarism Check.'}
+                            </p>
+                          </div>
+                        </div>
                         <div className="p-6">
                           <UploadZone onUpload={handleFileUpload} isAnalyzing={addRepoAnalyzing} jobId={addRepoJobId} onComplete={handleAddRepoComplete} user={user} showHero={false} title="Quick Upload" description="Drag & drop your files here" loadingLabel="Indexing..." loadingSubLabel="Adding to database" />
                         </div>
@@ -888,7 +1161,7 @@ function MainApp() {
                     </div>
                     <div className="lg:col-span-2">
                       <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.2 }} className="w-full">
-                        <PastDocuments user={user} refreshKey={pastDocsRefresh} />
+                        <PastDocuments user={user} refreshKey={pastDocsRefresh} onAddToFolder={handleFileUpload} />
                       </motion.div>
                     </div>
                   </div>

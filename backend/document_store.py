@@ -16,13 +16,15 @@ def get_connection(db_path: str = DB_PATH):
 
 
 def _ensure_repo_columns(cursor) -> None:
-    """Add repo_type and owner_id if missing (migration)."""
+    """Add repo_type, owner_id, and model_name columns if missing (migration)."""
     cursor.execute("PRAGMA table_info(documents)")
     cols = [r[1] for r in cursor.fetchall()]
     if "repo_type" not in cols:
         cursor.execute("ALTER TABLE documents ADD COLUMN repo_type TEXT NOT NULL DEFAULT 'university'")
     if "owner_id" not in cols:
         cursor.execute("ALTER TABLE documents ADD COLUMN owner_id INTEGER NULL")
+    if "model_name" not in cols:
+        cursor.execute("ALTER TABLE documents ADD COLUMN model_name TEXT NOT NULL DEFAULT 'default'")
 
 
 def init_db(db_path: str = DB_PATH) -> None:
@@ -42,7 +44,8 @@ def init_db(db_path: str = DB_PATH) -> None:
             raw_text_length INTEGER DEFAULT 0,
             indexed_at TEXT NOT NULL,
             repo_type TEXT NOT NULL DEFAULT 'university',
-            owner_id INTEGER NULL
+            owner_id INTEGER NULL,
+            model_name TEXT NOT NULL DEFAULT 'default'
         )
     """)
     # Migration for existing DBs that don't have repo columns
@@ -85,6 +88,7 @@ def save_document(
     repo_type: str = "university",
     owner_id: int = None,
     embeddings: Optional[List[bytes]] = None,
+    model_name: str = "default",
     db_path: str = DB_PATH,
 ) -> None:
     """Save document metadata, chunks, and optional embeddings. embeddings: list of bytes (numpy float32 .tobytes())."""
@@ -97,8 +101,8 @@ def save_document(
             """INSERT INTO documents (
                 document_id, file_name, file_path, num_chunks, indexing_time,
                 file_type, num_pages_or_slides, raw_text_length, indexed_at,
-                repo_type, owner_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                repo_type, owner_id, model_name
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 document_id,
                 file_name,
@@ -111,6 +115,7 @@ def save_document(
                 indexed_at,
                 repo_type,
                 owner_id,
+                model_name,
             ),
         )
         for i, text in enumerate(chunks):
@@ -130,11 +135,10 @@ def save_document(
         try:
             from faiss_index import invalidate_cached_index, invalidate_all_cached_indexes
             if repo_type == "university":
-                # A university doc affects EVERYONE's "both" cache, so easiest is to clear all
                 invalidate_all_cached_indexes()
             else:
-                invalidate_cached_index(repo_type, owner_id)
-                invalidate_cached_index("both", owner_id)
+                invalidate_cached_index(repo_type, owner_id, model_name)
+                invalidate_cached_index("both", owner_id, model_name)
         except Exception:
             pass
     finally:
@@ -158,8 +162,8 @@ def get_stats(db_path: str = DB_PATH):
         conn.close()
 
 
-def get_chunks_with_embeddings(repo_type: str = "university", owner_id: int = None, db_path: str = DB_PATH):
-    """Get chunks with embeddings for semantic similarity scan."""
+def get_chunks_with_embeddings(repo_type: str = "university", owner_id: int = None, model_name: str = "default", db_path: str = DB_PATH):
+    """Get chunks with embeddings for semantic similarity scan, filtered by model_name."""
     init_db(db_path)
     conn = get_connection(db_path)
     cursor = conn.cursor()
@@ -170,8 +174,9 @@ def get_chunks_with_embeddings(repo_type: str = "university", owner_id: int = No
                    FROM document_chunks dc
                    JOIN documents d ON dc.document_id = d.document_id
                    LEFT JOIN document_chunk_embeddings ce ON dc.document_id = ce.document_id AND dc.chunk_index = ce.chunk_index
-                   WHERE d.repo_type = 'university' OR (d.repo_type = 'personal' AND d.owner_id = ?)""",
-                (owner_id,)
+                   WHERE (d.repo_type = 'university' OR (d.repo_type = 'personal' AND d.owner_id = ?))
+                     AND d.model_name = ?""",
+                (owner_id, model_name)
             )
         elif repo_type == "personal" and owner_id is not None:
             cursor.execute(
@@ -179,8 +184,8 @@ def get_chunks_with_embeddings(repo_type: str = "university", owner_id: int = No
                    FROM document_chunks dc
                    JOIN documents d ON dc.document_id = d.document_id
                    LEFT JOIN document_chunk_embeddings ce ON dc.document_id = ce.document_id AND dc.chunk_index = ce.chunk_index
-                   WHERE d.repo_type = ? AND d.owner_id = ?""",
-                (repo_type, owner_id)
+                   WHERE d.repo_type = ? AND d.owner_id = ? AND d.model_name = ?""",
+                (repo_type, owner_id, model_name)
             )
         else:
             cursor.execute(
@@ -188,7 +193,8 @@ def get_chunks_with_embeddings(repo_type: str = "university", owner_id: int = No
                    FROM document_chunks dc
                    JOIN documents d ON dc.document_id = d.document_id
                    LEFT JOIN document_chunk_embeddings ce ON dc.document_id = ce.document_id AND dc.chunk_index = ce.chunk_index
-                   WHERE d.repo_type = 'university'"""
+                   WHERE d.repo_type = 'university' AND d.model_name = ?""",
+                (model_name,)
             )
         rows = cursor.fetchall()
         return [
@@ -234,6 +240,27 @@ def get_chunks_for_scan(repo_type: str = "university", owner_id: int = None, db_
         conn.close()
 
 
+def filename_exists(file_name: str, repo_type: str = "university", owner_id: int = None, db_path: str = DB_PATH) -> bool:
+    """Check if a document with the same file_name already exists in the given repo."""
+    init_db(db_path)
+    conn = get_connection(db_path)
+    cursor = conn.cursor()
+    try:
+        if repo_type == "personal" and owner_id is not None:
+            cursor.execute(
+                "SELECT COUNT(*) FROM documents WHERE file_name = ? AND repo_type = ? AND owner_id = ?",
+                (file_name, repo_type, owner_id)
+            )
+        else:
+            cursor.execute(
+                "SELECT COUNT(*) FROM documents WHERE file_name = ? AND repo_type = 'university'",
+                (file_name,)
+            )
+        return cursor.fetchone()[0] > 0
+    finally:
+        conn.close()
+
+
 def list_documents(repo_type: str = "university", owner_id: int = None, db_path: str = DB_PATH):
     """List documents. admin: repo_type=university, owner_id=None; teacher: repo_type=personal, owner_id=teacher_id."""
     init_db(db_path)
@@ -242,18 +269,18 @@ def list_documents(repo_type: str = "university", owner_id: int = None, db_path:
     try:
         if repo_type == "personal" and owner_id is not None:
             cursor.execute(
-                """SELECT document_id, file_name, file_type, num_chunks, num_pages_or_slides, indexed_at
+                """SELECT document_id, file_name, file_type, num_chunks, num_pages_or_slides, indexed_at, model_name
                    FROM documents WHERE repo_type = ? AND owner_id = ? ORDER BY indexed_at DESC""",
                 (repo_type, owner_id)
             )
         else:
             cursor.execute(
-                """SELECT document_id, file_name, file_type, num_chunks, num_pages_or_slides, indexed_at
+                """SELECT document_id, file_name, file_type, num_chunks, num_pages_or_slides, indexed_at, model_name
                    FROM documents WHERE repo_type = 'university' ORDER BY indexed_at DESC"""
             )
         rows = cursor.fetchall()
         return [
-            {"document_id": r[0], "file_name": r[1], "file_type": r[2], "num_chunks": r[3], "num_pages_or_slides": r[4], "indexed_at": r[5]}
+            {"document_id": r[0], "file_name": r[1], "file_type": r[2], "num_chunks": r[3], "num_pages_or_slides": r[4], "indexed_at": r[5], "model_name": r[6] or "default"}
             for r in rows
         ]
     finally:
