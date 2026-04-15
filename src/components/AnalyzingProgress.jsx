@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import axios from 'axios';
 
-const AnalyzingProgress = ({ jobId, onComplete, title = "Analyzing Document...", subtitle = "Checking for AI & Plagiarism matches", hideTitle = false }) => {
+const AnalyzingProgress = ({ jobId, onComplete, title = "Analyzing Document...", subtitle = "Checking for AI & Plagiarism matches", hideTitle = false, compact = false }) => {
     const [progress, setProgress] = useState(0);
     const [stage, setStage] = useState("Starting\u2026");
     const [error, setError] = useState(null);
@@ -129,6 +129,19 @@ const AnalyzingProgress = ({ jobId, onComplete, title = "Analyzing Document...",
                 <p className="font-bold text-red-600 text-sm">Analysis Failed</p>
                 <p className="text-xs text-slate-400 mt-1">{error}</p>
             </motion.div>
+        );
+    }
+
+    if (compact) {
+        return (
+            <div className="flex items-center gap-2 w-full">
+                <div className="flex-1 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                    <motion.div className="h-full bg-gradient-to-r from-brand-400 to-teal-500 rounded-full"
+                        initial={{ width: 0 }} animate={{ width: `${progress}%` }} transition={{ ease: "easeOut", duration: 0.5 }} />
+                </div>
+                <span className="text-[10px] font-bold text-brand-500 shrink-0">{Math.round(progress)}%</span>
+                <span className="text-[10px] text-slate-400 truncate max-w-[120px]">{stage}</span>
+            </div>
         );
     }
 

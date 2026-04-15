@@ -148,9 +148,27 @@ const ComparisonUpload = ({ onCompare, isAnalyzing, jobId, onComplete }) => {
                             animate={{ opacity: 1, y: 0 }}
                             exit={{ opacity: 0, y: -10 }}
                         >
+                            {/* Instructions */}
+                            <div className="mb-8 flex gap-4 flex-col sm:flex-row">
+                                <div className="flex-1 flex items-start gap-3 bg-blue-50 border border-blue-200 rounded-2xl px-4 py-3">
+                                    <div className="w-6 h-6 rounded-full bg-blue-500 text-white text-xs font-black flex items-center justify-center shrink-0 mt-0.5">A</div>
+                                    <div>
+                                        <p className="text-sm font-black text-blue-800">Original PDF</p>
+                                        <p className="text-xs text-blue-600 font-medium mt-0.5">Upload the original / reference document here — the one that was written first.</p>
+                                    </div>
+                                </div>
+                                <div className="flex-1 flex items-start gap-3 bg-amber-50 border border-amber-200 rounded-2xl px-4 py-3">
+                                    <div className="w-6 h-6 rounded-full bg-amber-500 text-white text-xs font-black flex items-center justify-center shrink-0 mt-0.5">B</div>
+                                    <div>
+                                        <p className="text-sm font-black text-amber-800">Updated / Edited PDF</p>
+                                        <p className="text-xs text-amber-600 font-medium mt-0.5">Upload the edited or suspected document here — extra words added in this document will be highlighted in yellow.</p>
+                                    </div>
+                                </div>
+                            </div>
+
                             <div className="flex flex-col md:flex-row gap-10 items-center relative z-10">
                                 <SingleUploadBox
-                                    label="Source Document"
+                                    label="Original PDF"
                                     file={sourceFile}
                                     setFile={setSourceFile}
                                     disabled={isAnalyzing}
@@ -164,7 +182,7 @@ const ComparisonUpload = ({ onCompare, isAnalyzing, jobId, onComplete }) => {
                                 </div>
 
                                 <SingleUploadBox
-                                    label="Suspect Document"
+                                    label="Updated / Edited PDF"
                                     file={targetFile}
                                     setFile={setTargetFile}
                                     disabled={isAnalyzing}

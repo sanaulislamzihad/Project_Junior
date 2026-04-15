@@ -61,7 +61,7 @@ def extract_words_with_positions(pdf_path: str) -> List[Dict]:
 
 
 def find_extra_indices(source_norms: List[str], suspect_norms: List[str]) -> List[int]:
-    """Return indices of words in suspect that are extra (insert / replace)."""
+    """Return indices of words in suspect that are extra (insert / replace vs source)."""
     sm = difflib.SequenceMatcher(None, source_norms, suspect_norms, autojunk=False)
     extras = set()
     for op, _i1, _i2, j1, j2 in sm.get_opcodes():

@@ -32,15 +32,14 @@ FAISS_MIN_CHUNKS = 20
 DEFAULT_TOP_K = 50
 
 
-def _index_key(repo_type: str, owner_id) -> str:
-    # Build a unique key for this repository so we can cache one index per repo.
+def _index_key(repo_type: str, owner_id, model_name: str = "default") -> str:
+    # Build a unique key for this repository + model so we never mix indexes from different models.
+    model_slug = model_name.replace("/", "_").replace("-", "_")
     if repo_type == "both" and owner_id is not None:
-        return f"both_{owner_id}"
+        return f"both_{owner_id}_{model_slug}"
     if repo_type == "personal" and owner_id is not None:
-        # Personal repo: key is personal_<teacher user id>.
-        return f"personal_{owner_id}"
-    # Whole-university repo uses key "university".
-    return "university"
+        return f"personal_{owner_id}_{model_slug}"
+    return f"university_{model_slug}"
 
 
 def _ensure_index_dir():
@@ -129,12 +128,12 @@ def search_faiss(index, chunk_infos: list, query_embeddings: np.ndarray, k: int 
     return results
 
 
-def save_index_to_disk(repo_type: str, owner_id, index, chunk_infos: list):
+def save_index_to_disk(repo_type: str, owner_id, index, chunk_infos: list, model_name: str = "default"):
     # Save FAISS index and chunk metadata to disk so we can reload without rebuilding from DB.
     if faiss is None or index is None:
         return
     _ensure_index_dir()
-    key = _index_key(repo_type, owner_id)
+    key = _index_key(repo_type, owner_id, model_name)
     index_path = os.path.join(INDEX_DIR, f"{key}.faiss")
     # GPU indexes cannot be written directly — convert to CPU first.
     try:
@@ -148,11 +147,11 @@ def save_index_to_disk(repo_type: str, owner_id, index, chunk_infos: list):
         json.dump(chunk_infos, f)
 
 
-def load_index_from_disk(repo_type: str, owner_id) -> tuple:
+def load_index_from_disk(repo_type: str, owner_id, model_name: str = "default") -> tuple:
     # Load FAISS index and chunk_infos from disk; returns (index, chunk_infos) or (None, []).
     if faiss is None:
         return None, []
-    key = _index_key(repo_type, owner_id)
+    key = _index_key(repo_type, owner_id, model_name)
     index_path = os.path.join(INDEX_DIR, f"{key}.faiss")
     meta_path = os.path.join(INDEX_DIR, f"{key}.meta")
     if not os.path.isfile(index_path) or not os.path.isfile(meta_path):
@@ -177,10 +176,10 @@ def load_index_from_disk(repo_type: str, owner_id) -> tuple:
     return index, chunk_infos
 
 
-def invalidate_cached_index(repo_type: str, owner_id):
-    # Remove cached index for this repo so next search rebuilds from DB (after add/delete document).
+def invalidate_cached_index(repo_type: str, owner_id, model_name: str = "default"):
+    # Remove cached index for this repo+model so next search rebuilds from DB.
     _ensure_index_dir()
-    key = _index_key(repo_type, owner_id)
+    key = _index_key(repo_type, owner_id, model_name)
     for ext in (".faiss", ".meta"):
         path = os.path.join(INDEX_DIR, f"{key}{ext}")
         try:

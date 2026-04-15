@@ -24,8 +24,8 @@ from text_pipeline import (
     DocumentMetadata,
     light_clean_preserve_newlines,
 )
-from document_store import save_document, list_documents, delete_document, update_document_path, get_stats, get_chunks_for_scan, get_chunks_with_embeddings, DB_PATH
-from embedding_pipeline import encode_chunks, find_matches, extract_top_similar_sentences
+from document_store import save_document, list_documents, delete_document, update_document_path, get_stats, get_chunks_for_scan, get_chunks_with_embeddings, DB_PATH, filename_exists
+from embedding_pipeline import encode_chunks, find_matches, extract_top_similar_sentences, AVAILABLE_MODELS, DEFAULT_MODEL_NAME
 from faiss_index import invalidate_cached_index
 from diff_checker import compute_comparison
 from pdf_highlight_pipeline import highlight_pdf_matches
@@ -177,7 +177,7 @@ def require_admin(request: Request) -> dict:
 
 # ==================== RATE LIMITING ====================
 _rate_limits: dict = defaultdict(list)
-RATE_LIMIT_ANALYZE = int(os.getenv("RATE_LIMIT_ANALYZE", "10"))
+RATE_LIMIT_ANALYZE = int(os.getenv("RATE_LIMIT_ANALYZE", "500"))
 RATE_WINDOW = 60
 
 
@@ -266,6 +266,62 @@ def delete_user(user_id: int, current_user: dict = Depends(require_admin)):
 @app.get("/api/health")
 def health_check():
     return {"status": "active", "mode": "NSU-PlagiChecker"}
+
+
+@app.get("/models/list")
+def list_models():
+    """Return all available embedding models with metadata."""
+    return {
+        "models": [
+            {"id": k, "label": v["label"], "description": v["description"], "default": k == DEFAULT_MODEL_NAME}
+            for k, v in AVAILABLE_MODELS.items()
+        ]
+    }
+
+
+@app.get("/models/status")
+def models_status():
+    """Return which models are cached/available offline on this server."""
+    from embedding_pipeline import _is_model_cached
+    result = {}
+    for key, info in AVAILABLE_MODELS.items():
+        result[key] = {
+            "cached": _is_model_cached(info["model_id"]),
+            "label": info["label"],
+            "model_id": info["model_id"],
+        }
+    return {"models": result}
+
+
+@app.post("/models/download/{model_name}")
+def download_model(model_name: str, current_user: dict = Depends(require_admin)):
+    """Trigger download of a model from HuggingFace (admin only). Requires internet."""
+    if model_name not in AVAILABLE_MODELS:
+        raise HTTPException(status_code=404, detail=f"Unknown model: {model_name}")
+    from embedding_pipeline import _is_model_cached, MODEL_CACHE_DIR, DEVICE, _MODEL_CACHE
+    model_info = AVAILABLE_MODELS[model_name]
+    model_id = model_info["model_id"]
+    if _is_model_cached(model_id):
+        return {"success": True, "message": f"Model '{model_name}' is already downloaded."}
+    # Temporarily lift offline env vars so download can proceed
+    old_hf = os.environ.pop("HF_HUB_OFFLINE", None)
+    old_tr = os.environ.pop("TRANSFORMERS_OFFLINE", None)
+    old_ds = os.environ.pop("HF_DATASETS_OFFLINE", None)
+    try:
+        from sentence_transformers import SentenceTransformer
+        os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
+        model = SentenceTransformer(model_id, cache_folder=MODEL_CACHE_DIR, device=DEVICE)
+        _MODEL_CACHE[model_name] = model
+        return {"success": True, "message": f"Model '{model_info['label']}' downloaded successfully."}
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Download failed — check internet connection. ({e})")
+    finally:
+        if old_hf is not None:
+            os.environ["HF_HUB_OFFLINE"] = old_hf
+        if old_tr is not None:
+            os.environ["TRANSFORMERS_OFFLINE"] = old_tr
+        if old_ds is not None:
+            os.environ["HF_DATASETS_OFFLINE"] = old_ds
 
 
 # ==================== SAVED JOB RESULTS ====================
@@ -408,6 +464,7 @@ async def _run_analysis(
     role: str,
     direct_text: str | None = None,
     submitted_by: int | None = None,
+    model_name: str = DEFAULT_MODEL_NAME,
 ):
     """
     Background task: runs the full analysis pipeline.
@@ -464,6 +521,23 @@ async def _run_analysis(
 
         await _push(queue, 25, "Chunking complete\u2026")
 
+        # Duplicate filename check before saving to repo
+        if will_save and filename_exists(original_filename, repo_type=repo_type, owner_id=owner_id_val):
+            warning_msg = (
+                f"'{original_filename}' already exists in this repository. "
+                f"Upload skipped to prevent duplicates."
+            )
+            await queue.put({"progress": 100, "stage": "Done", "warning": warning_msg})
+            analysis_results[job_id] = {"data": {
+                "warning": warning_msg,
+                "filename": original_filename,
+                "duplicate": True,
+                "overall_similarity": 0.0,
+                "matches": [],
+                "top_similar_sentences": [],
+            }, "created_at": time.time()}
+            return
+
         meta_dict = meta.to_dict()
         meta_dict["file_path"] = file_path_stored
         meta_dict["repo_type"] = repo_type
@@ -481,12 +555,15 @@ async def _run_analysis(
 
         if will_save:
             # Stage 2 — Encode embeddings + save to repo
+            from embedding_pipeline import _is_model_cached
+            if not _is_model_cached(AVAILABLE_MODELS[model_name]["model_id"]):
+                await _push(queue, 40, "Downloading AI model\u2026 (first-time only)")
             await _push(queue, 45, "Computing embeddings\u2026")
             BATCH_SIZE = 64
             embeddings_arr = []
             for i in range(0, len(chunks), BATCH_SIZE):
                 batch = chunks[i:i + BATCH_SIZE]
-                batch_emb = await asyncio.to_thread(encode_chunks, batch)
+                batch_emb = await asyncio.to_thread(encode_chunks, batch, model_name)
                 embeddings_arr.extend(batch_emb)
             import numpy as np
             embeddings_arr = np.array(embeddings_arr)
@@ -507,15 +584,19 @@ async def _run_analysis(
                 repo_type=repo_type,
                 owner_id=owner_id_val,
                 embeddings=embeddings_blobs,
+                model_name=model_name,
             )
             meta_dict["indexed_at"] = datetime.now(timezone.utc).isoformat()
-            await asyncio.to_thread(invalidate_cached_index, repo_type, owner_id_val)
+            await asyncio.to_thread(invalidate_cached_index, repo_type, owner_id_val, model_name)
 
         elif chunks:
             # Stage 2 — Similarity scan
+            from embedding_pipeline import _is_model_cached
+            if not _is_model_cached(AVAILABLE_MODELS[model_name]["model_id"]):
+                await _push(queue, 40, "Downloading AI model\u2026 (first-time only)")
             await _push(queue, 45, "Computing embeddings\u2026")
             repo_chunks = await asyncio.to_thread(
-                get_chunks_with_embeddings, repo_type=repo_type, owner_id=owner_id_val
+                get_chunks_with_embeddings, repo_type=repo_type, owner_id=owner_id_val, model_name=model_name
             )
 
             await _push(queue, 60, "Scanning repository\u2026")
@@ -531,6 +612,7 @@ async def _run_analysis(
                 repo_chunks,
                 repo_type=repo_type,
                 owner_id=owner_id_val,
+                model_name=model_name,
             )
 
             await _push(queue, 75, "Ranking matches\u2026")
@@ -612,7 +694,13 @@ async def _run_analysis(
         await queue.put({"progress": 100, "stage": "Done"})
 
     except Exception as e:
-        await queue.put({"error": str(e)})
+        err_str = str(e)
+        if err_str.startswith("MODEL_NOT_AVAILABLE:"):
+            parts = err_str.split(":")
+            model_key = parts[1] if len(parts) > 1 else model_name
+            label = AVAILABLE_MODELS.get(model_key, {}).get("label", model_key)
+            err_str = f'MODEL_NOT_AVAILABLE: "{label}" model needs to be downloaded first. Connect to internet and try again — it will download and cache automatically.'
+        await queue.put({"error": err_str})
     finally:
         if tmp_path:
             try:
@@ -632,6 +720,7 @@ async def analyze_document(
     role: str = Form("teacher"),
     add_to_repo: str = Form("true"),
     filename_override: str = Form(""),
+    model_name: str = Form(DEFAULT_MODEL_NAME),
 ):
     """
     Kick off an analysis job and return {job_id} immediately.
@@ -656,6 +745,10 @@ async def analyze_document(
     repo_type = (repo_type or "university").lower()
     if repo_type not in ("university", "personal", "both"):
         raise HTTPException(status_code=400, detail="repo_type must be 'university', 'personal', or 'both'.")
+
+    # Validate model_name; fall back to default if unknown
+    if model_name not in AVAILABLE_MODELS:
+        model_name = DEFAULT_MODEL_NAME
 
     will_save = add_to_repo.lower() in ("true", "1", "yes")
     if will_save:
@@ -711,6 +804,7 @@ async def analyze_document(
         role=role,
         direct_text=direct_text if has_text else None,
         submitted_by=submitted_by_int,
+        model_name=model_name,
     )
 
     return {"job_id": job_id}

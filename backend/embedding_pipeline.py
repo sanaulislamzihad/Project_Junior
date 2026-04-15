@@ -1,5 +1,6 @@
 # embedding_pipeline.py
-# Semantic similarity via sentence-transformers/all-mpnet-base-v2; lexical via Jaccard.
+# Semantic similarity via sentence-transformers; lexical via Jaccard.
+# Supports multiple embedding models: default (all-mpnet-base-v2) and scincl (malteos/scincl).
 # FAISS vector indexing is used when the repository is large for efficient similarity search.
 
 import hashlib
@@ -16,6 +17,25 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 MAX_CONCURRENT_WORKERS = min(4, os.cpu_count() or 4)
+
+# ---------------------------------------------------------------------------
+# Available embedding models
+# ---------------------------------------------------------------------------
+AVAILABLE_MODELS = {
+    "default": {
+        "model_id": "sentence-transformers/all-mpnet-base-v2",
+        "dim": 768,
+        "label": "General Purpose",
+        "description": "Best for general academic writing. Works fully offline.",
+    },
+    "paraphrase": {
+        "model_id": "sentence-transformers/paraphrase-mpnet-base-v2",
+        "dim": 768,
+        "label": "Research / Paraphrase Detection",
+        "description": "Detects paraphrased content — same ideas in different words. Best for research papers.",
+    },
+}
+DEFAULT_MODEL_NAME = "default"
 
 # ---------------------------------------------------------------------------
 # GPU / device detection
@@ -40,10 +60,85 @@ DEVICE = _detect_device()
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_CACHE_DIR = os.path.join(_THIS_DIR, "model_cache")
 
-# Force fully offline mode — use cached model, never contact HuggingFace
-os.environ["HF_HUB_OFFLINE"] = "1"
-os.environ["TRANSFORMERS_OFFLINE"] = "1"
-os.environ["HF_DATASETS_OFFLINE"] = "1"
+# NOTE: We do NOT set HF_HUB_OFFLINE globally here.
+# Instead, _get_model() passes local_files_only=True when the model is already cached,
+# which avoids any network call for cached models without blocking downloads for new ones.
+
+# ---------------------------------------------------------------------------
+# Multi-model cache: one loaded model per model_name key
+# ---------------------------------------------------------------------------
+_MODEL_CACHE: dict = {}
+_MODEL_LOCK = __import__("threading").Lock()
+
+
+def _is_model_cached(model_id: str) -> bool:
+    """Check if a model has been downloaded to the local model_cache directory."""
+    if not os.path.isdir(MODEL_CACHE_DIR):
+        return False
+    slug1 = model_id.replace("/", "_")
+    slug2 = "models--" + model_id.replace("/", "--")
+    for slug in (slug1, slug2):
+        path = os.path.join(MODEL_CACHE_DIR, slug)
+        if os.path.isdir(path) and os.listdir(path):
+            return True
+    # Also check for any subdir that contains the model name
+    try:
+        for name in os.listdir(MODEL_CACHE_DIR):
+            if slug1.lower() in name.lower() or model_id.split("/")[-1].lower() in name.lower():
+                if os.path.isdir(os.path.join(MODEL_CACHE_DIR, name)):
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def _get_model(model_name: str = DEFAULT_MODEL_NAME):
+    """Load and cache a SentenceTransformer model.
+    - If already cached on disk: loads with local_files_only=True (no network call).
+    - If not cached: downloads from HuggingFace (requires internet on first use).
+    """
+    if model_name not in AVAILABLE_MODELS:
+        model_name = DEFAULT_MODEL_NAME
+
+    if model_name in _MODEL_CACHE:
+        return _MODEL_CACHE[model_name]
+
+    with _MODEL_LOCK:
+        if model_name in _MODEL_CACHE:
+            return _MODEL_CACHE[model_name]
+
+        from sentence_transformers import SentenceTransformer
+        os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
+        model_id = AVAILABLE_MODELS[model_name]["model_id"]
+        cached = _is_model_cached(model_id)
+
+        try:
+            if cached:
+                # Already on disk — load fully offline, no network call needed.
+                model = SentenceTransformer(
+                    model_id,
+                    cache_folder=MODEL_CACHE_DIR,
+                    device=DEVICE,
+                    local_files_only=True,
+                )
+            else:
+                # Not cached — download from HuggingFace (first use only).
+                logger.info("Model '%s' not cached. Downloading from HuggingFace...", model_id)
+                model = SentenceTransformer(
+                    model_id,
+                    cache_folder=MODEL_CACHE_DIR,
+                    device=DEVICE,
+                )
+                logger.info("Model '%s' downloaded and cached successfully.", model_id)
+        except Exception as err:
+            raise RuntimeError(
+                f"MODEL_NOT_AVAILABLE:{model_name}:{model_id}"
+            ) from err
+
+        _MODEL_CACHE[model_name] = model
+        logger.info("Model '%s' (%s) loaded on device: %s", model_name, model_id, DEVICE)
+        return model
+
 
 # Optional import of FAISS index module; if missing or FAISS not installed, we use brute-force only.
 try:
@@ -63,9 +158,6 @@ except Exception:
     save_index_to_disk = None
     FAISS_MIN_CHUNKS = 999999
     DEFAULT_TOP_K = 10
-
-_MODEL = None
-_MODEL_LOCK = __import__("threading").Lock()
 
 
 def _tokenize(text: str) -> set:
@@ -190,6 +282,7 @@ def _sentence_level_matches(
     min_semantic: float,
     min_lexical: float,
     min_fingerprint: float = 0.08,
+    model_name: str = DEFAULT_MODEL_NAME,
 ) -> List[dict]:
     # Find sentence-to-sentence matches to explain why a chunk matched.
     q_sentences = _split_sentences(query_text)
@@ -197,8 +290,8 @@ def _sentence_level_matches(
     if not q_sentences or not m_sentences:
         return []
 
-    q_emb = encode_chunks(q_sentences)
-    m_emb = encode_chunks(m_sentences)
+    q_emb = encode_chunks(q_sentences, model_name=model_name)
+    m_emb = encode_chunks(m_sentences, model_name=model_name)
     if len(q_emb) == 0 or len(m_emb) == 0:
         return []
 
@@ -209,16 +302,12 @@ def _sentence_level_matches(
             sem = cosine_similarity(q_vec, m_vec)
             lex = lexical_similarity(q_sentences[i].lower(), m_sentences[j].lower())
             fp = fingerprint_similarity(q_sentences[i].lower(), m_sentences[j].lower())
-            # OR gate: high semantic OR lexical overlap passes
-            # fp is intentionally excluded from lex_pass: paraphrases use different words
-            # so character n-gram overlap (fp) is naturally low even for genuine matches.
-            # The hard sem >= 0.35 floor below prevents pure stopword-overlap false positives.
             sem_pass = sem >= min_semantic
             lex_pass = (lex >= min_lexical)
             if not (sem_pass or lex_pass):
                 continue
-            # Hard floor: sem < 0.35 means the sentences are semantically unrelated
-            if sem < 0.35:
+            hard_floor = _get_thresholds(model_name)["sem_hard_floor"]
+            if sem < hard_floor:
                 continue
             score = (0.65 * sem) + (0.15 * lex) + (0.10 * fp) + (0.10 * winnowing_similarity(q_sentences[i].lower(), m_sentences[j].lower()))
             if best is None or score > best["score"]:
@@ -249,23 +338,22 @@ def _build_match_record(
     sem: float,
     lex: float,
     fp: float,
+    model_name: str = DEFAULT_MODEL_NAME,
 ) -> Optional[dict]:
+    thr = _get_thresholds(model_name)
     sentence_matches = _sentence_level_matches(
         query_text,
         matched_text,
-        min_semantic=DEFAULT_SENTENCE_SEMANTIC,
-        min_lexical=DEFAULT_SENTENCE_LEXICAL,
-        min_fingerprint=DEFAULT_MIN_FINGERPRINT,
+        min_semantic=thr["sentence_semantic"],
+        min_lexical=thr["sentence_lexical"],
+        min_fingerprint=thr["min_fingerprint"],
+        model_name=model_name,
     )
     common_portions = _extract_common_portions(query_text, matched_text)
-    # Keep match if we have sentence-level evidence OR if chunk-level semantic is very high
-    # (high semantic alone can indicate paraphrase plagiarism)
+    paraphrase_floor = max(0.72, thr["semantic_threshold"] + 0.02)
     if not sentence_matches and not common_portions:
-        # For very high semantic similarity (>= 0.72), still report the match even without
-        # explicit sentence evidence — this catches heavy paraphrasing
-        if sem < 0.72:
+        if sem < paraphrase_floor:
             return None
-        # Build synthetic sentence entry from full chunk text for reporting
         sentence_matches = [{
             "query_sentence": query_text[:300].strip(),
             "matched_sentence": matched_text[:300].strip(),
@@ -315,7 +403,6 @@ def extract_top_similar_sentences(matches: List[dict], limit: Optional[int] = No
             seen.add(key)
             sem = float(sm.get("semantic_similarity") or 0.0)
             lex = float(sm.get("lexical_similarity") or 0.0)
-            # Sentence score is primary, chunk score is weak tie-breaker.
             score = (0.75 * sem) + (0.20 * lex) + (0.05 * ((sem_chunk + lex_chunk) / 2.0))
             rows.append(
                 {
@@ -338,40 +425,20 @@ def extract_top_similar_sentences(matches: List[dict], limit: Optional[int] = No
     return top
 
 
-# Model: sentence-transformers/all-mpnet-base-v2 (768 dim, strong MTEB performance).
-EMBEDDING_MODEL = "sentence-transformers/all-mpnet-base-v2"
-# Embedding dimension for all-mpnet-base-v2 is 768; used for empty-array shape and filtering old embeddings.
+# Embedding dimension for all supported models is 768; used for empty-array shape.
 DEFAULT_EMBEDDING_DIM = 768
 
 
-def _get_model():
-    global _MODEL
-    if _MODEL is None:
-        with _MODEL_LOCK:
-            if _MODEL is None:
-                from sentence_transformers import SentenceTransformer
-                os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
-                _MODEL = SentenceTransformer(
-                    EMBEDDING_MODEL,
-                    cache_folder=MODEL_CACHE_DIR,
-                    device=DEVICE,
-                    local_files_only=True,
-                )
-                logger.info("SentenceTransformer loaded on device: %s", DEVICE)
-    return _MODEL
+def get_embedding_dim(model_name: str = DEFAULT_MODEL_NAME) -> int:
+    """Return the embedding dimension of the specified model."""
+    return _get_model(model_name).get_sentence_embedding_dimension()
 
 
-def get_embedding_dim() -> int:
-    # Return the embedding dimension of the current model (e.g. 768 for all-mpnet-base-v2).
-    return _get_model().get_sentence_embedding_dimension()
-
-
-def encode_chunks(chunks: List[str]) -> np.ndarray:
-    # Encode a list of text chunks to embedding vectors; returns array of shape (n_chunks, dim), float32.
-    # On GPU, a larger batch_size is used for throughput; CPU falls back to a conservative size.
+def encode_chunks(chunks: List[str], model_name: str = DEFAULT_MODEL_NAME) -> np.ndarray:
+    """Encode a list of text chunks to embedding vectors using the specified model."""
     if not chunks:
         return np.array([]).reshape(0, DEFAULT_EMBEDDING_DIM)
-    model = _get_model()
+    model = _get_model(model_name)
     batch_size = 128 if DEVICE in ("cuda", "mps") else 32
     embeddings = model.encode(
         chunks,
@@ -394,21 +461,48 @@ def cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def _filter_chunks_by_embedding_dim(repo_chunks: List[dict], dim: int) -> List[dict]:
-    # Keep only chunks whose embedding size matches current model (e.g. 1024 floats = 4096 bytes); skip old 384-dim.
+    # Keep only chunks whose embedding size matches current model; skip chunks from other models.
     byte_len = dim * 4
     return [rc for rc in repo_chunks if rc.get("embedding") is not None and len(rc["embedding"]) == byte_len]
 
 
-# Chunk-level semantic threshold: 0.60 catches paraphrases without too many false positives
+# Default thresholds (all-mpnet-base-v2 — sentence-level semantic model)
 DEFAULT_SEMANTIC_THRESHOLD = 0.60
-# Minimum lexical overlap at chunk level
 DEFAULT_MIN_LEXICAL = 0.08
-# Minimum fingerprint overlap at chunk level
 DEFAULT_MIN_FINGERPRINT = 0.05
-# Sentence-level semantic gate — lowered to 0.42 so diluted paraphrases (sem 0.42-0.49) pass
 DEFAULT_SENTENCE_SEMANTIC = 0.42
-# Sentence-level lexical gate — very low: semantic alone can indicate plagiarism
 DEFAULT_SENTENCE_LEXICAL = 0.05
+
+# Per-model threshold overrides.
+# paraphrase-mpnet-base-v2 is a proper semantic/paraphrase model — scores behave like
+# all-mpnet-base-v2 but it is fine-tuned specifically on paraphrase datasets (PAWS, QQP).
+# We use slightly stricter thresholds than the default to reduce incidental overlap noise
+# while still catching genuine paraphrase plagiarism in research papers.
+_MODEL_THRESHOLDS: dict = {
+    "paraphrase": {
+        "semantic_threshold":   0.72,   # slightly stricter than default 0.60
+        "min_lexical":          0.06,   # slightly relaxed — paraphrases have less word overlap
+        "min_fingerprint":      0.04,
+        "sentence_semantic":    0.55,   # higher than default 0.42 to reduce noise
+        "sentence_lexical":     0.04,
+        "sem_hard_floor":       0.45,
+        "lex_bypass":           0.08,
+    },
+}
+
+
+def _get_thresholds(model_name: str) -> dict:
+    """Return the threshold dict for this model (falls back to defaults)."""
+    overrides = _MODEL_THRESHOLDS.get(model_name, {})
+    return {
+        "semantic_threshold": overrides.get("semantic_threshold", DEFAULT_SEMANTIC_THRESHOLD),
+        "min_lexical":        overrides.get("min_lexical",        DEFAULT_MIN_LEXICAL),
+        "min_fingerprint":    overrides.get("min_fingerprint",    DEFAULT_MIN_FINGERPRINT),
+        "sentence_semantic":  overrides.get("sentence_semantic",  DEFAULT_SENTENCE_SEMANTIC),
+        "sentence_lexical":   overrides.get("sentence_lexical",   DEFAULT_SENTENCE_LEXICAL),
+        "sem_hard_floor":     overrides.get("sem_hard_floor",     0.35),
+        "lex_bypass":         overrides.get("lex_bypass",         0.05),
+    }
 
 
 def _match_query_chunk_bruteforce(
@@ -419,10 +513,11 @@ def _match_query_chunk_bruteforce(
     threshold: float,
     min_lexical: float,
     min_fingerprint: float,
+    model_name: str = DEFAULT_MODEL_NAME,
 ) -> dict:
     """Score one query chunk against every repo chunk (brute-force path)."""
     q_lower = q_text.lower()
-    # No hard cap per document — threshold filters naturally. All chunks that pass are reported.
+    lex_bypass_min = _get_thresholds(model_name)["lex_bypass"]
     matches_per_doc: dict = {}
     for rc in repo_chunks:
         if "embedding" not in rc or rc["embedding"] is None:
@@ -434,15 +529,8 @@ def _match_query_chunk_bruteforce(
         fp = fingerprint_similarity(q_lower, matched_text.lower())
         winnow = winnowing_similarity(q_lower, matched_text.lower())
         combined = (0.60 * sem) + (0.15 * lex) + (0.15 * winnow) + (0.10 * fp)
-        # Standard path: high semantic + lexical + fingerprint overlap
         sem_match = (sem >= threshold and lex >= min_lexical and fp >= min_fingerprint)
-        # Lexical bypass: word-overlap alone is a reliable signal even when semantic
-        # similarity collapses due to chunk dilution (mixed content from multiple sources).
-        # For a paraphrase sentence that is only ~15-20% of a 150-word chunk the
-        # chunk-level sem can drop below any reasonable floor, but shared vocabulary
-        # (topic nouns + stopwords) keeps lex consistently above 0.05.
-        # Sentence-level validation in _build_match_record is the accuracy guard.
-        lex_bypass = (lex >= 0.05)
+        lex_bypass = (lex >= lex_bypass_min)
         if sem_match or lex_bypass:
             entry = {"combined": combined, "sem": sem, "lex": lex, "fp": fp,
                      "rc": rc, "matched_text": matched_text}
@@ -466,6 +554,7 @@ def _match_query_chunk_bruteforce(
                 matched_chunk_index=rc["chunk_index"],
                 matched_text=raw["matched_text"],
                 sem=raw["sem"], lex=raw["lex"], fp=raw["fp"],
+                model_name=model_name,
             )
             if rec is not None:
                 matches.append(rec)
@@ -480,24 +569,23 @@ def _match_query_chunk_faiss(
     threshold: float,
     min_lexical: float,
     min_fingerprint: float,
+    model_name: str = DEFAULT_MODEL_NAME,
 ) -> dict:
     """Score one query chunk using pre-computed FAISS top-K candidates."""
     if not faiss_row:
         return {"matches": [], "top": None}
 
     q_lower = q_text.lower()
-    # No hard cap — threshold filters naturally.
+    lex_bypass_min = _get_thresholds(model_name)["lex_bypass"]
     matches_per_doc: dict = {}
     for chunk_info, sem_score in faiss_row:
         sem_val = float(sem_score)
-        # Verbatim-copy bypass: allow low-sem chunks through if they may still be
-        # exact copies with diluted embeddings (checked fully after lex/fp computed).
         doc_id = chunk_info["document_id"]
         matched_text = chunk_info.get("chunk_text") or ""
         lex_val = lexical_similarity(q_lower, matched_text.lower())
         fp_val = fingerprint_similarity(q_lower, matched_text.lower())
         sem_match = (sem_val >= threshold and lex_val >= min_lexical and fp_val >= min_fingerprint)
-        lex_bypass = (lex_val >= 0.05)
+        lex_bypass = (lex_val >= lex_bypass_min)
         if not (sem_match or lex_bypass):
             continue
         winnow_val = winnowing_similarity(q_lower, matched_text.lower())
@@ -525,6 +613,7 @@ def _match_query_chunk_faiss(
                 matched_chunk_index=ci["chunk_index"],
                 matched_text=raw["matched_text"],
                 sem=raw["sem"], lex=raw["lex"], fp=raw["fp"],
+                model_name=model_name,
             )
             if rec is not None:
                 matches.append(rec)
@@ -554,16 +643,13 @@ def _aggregate_parallel_results(
             total_overall += top["combined"]
             matched_count += 1
 
-    # Match rate = what % of chunks had any match
     match_rate = matched_count / n_query_chunks if n_query_chunks else 0.0
 
-    # Average quality of matched chunks only
     avg_sem  = (total_sem / matched_count) if matched_count else 0.0
     avg_lex  = (total_lex / matched_count) if matched_count else 0.0
     avg_fp   = (total_fp / matched_count) if matched_count else 0.0
     avg_comb = (total_overall / matched_count) if matched_count else 0.0
 
-    # Final score = match_rate * avg_quality * 100
     sem_overall      = round(match_rate * avg_sem * 100, 2)
     lex_overall      = round(match_rate * avg_lex * 100, 2)
     fp_overall       = round(match_rate * avg_fp * 100, 2)
@@ -587,30 +673,32 @@ def find_matches(
     min_lexical: float = None,
     min_fingerprint: float = None,
     max_workers: int = None,
+    model_name: str = DEFAULT_MODEL_NAME,
 ) -> tuple:
     """Compare query chunks to repository in parallel; returns (sem_%, lex_%, fp_%, overall_%, matches)."""
     t_start = time.perf_counter()
 
+    thr_cfg = _get_thresholds(model_name)
     if threshold is None:
-        threshold = DEFAULT_SEMANTIC_THRESHOLD
+        threshold = thr_cfg["semantic_threshold"]
     if min_lexical is None:
-        min_lexical = DEFAULT_MIN_LEXICAL
+        min_lexical = thr_cfg["min_lexical"]
     if min_fingerprint is None:
-        min_fingerprint = DEFAULT_MIN_FINGERPRINT
+        min_fingerprint = thr_cfg["min_fingerprint"]
     if max_workers is None:
         max_workers = MAX_CONCURRENT_WORKERS
     if not query_chunks or not repo_chunks:
         return 0.0, 0.0, 0.0, 0.0, []
 
-    dim = get_embedding_dim()
+    dim = get_embedding_dim(model_name)
     repo_chunks = _filter_chunks_by_embedding_dim(repo_chunks, dim)
     if not repo_chunks:
         return 0.0, 0.0, 0.0, 0.0, []
 
     n_workers = min(max_workers, len(query_chunks))
     logger.info(
-        "find_matches: %d query chunks x %d repo chunks (workers=%d)",
-        len(query_chunks), len(repo_chunks), n_workers,
+        "find_matches[%s]: %d query chunks x %d repo chunks (workers=%d)",
+        model_name, len(query_chunks), len(repo_chunks), n_workers,
     )
 
     use_faiss = (
@@ -622,16 +710,16 @@ def find_matches(
 
     if use_faiss:
         index, chunk_infos = (
-            load_index_from_disk(repo_type, owner_id)
+            load_index_from_disk(repo_type, owner_id, model_name)
             if load_index_from_disk else (None, [])
         )
         if index is None or not chunk_infos:
             index, chunk_infos = build_index_from_chunks(repo_chunks)
             if index is not None and chunk_infos and save_index_to_disk and repo_type is not None:
-                save_index_to_disk(repo_type, owner_id, index, chunk_infos)
+                save_index_to_disk(repo_type, owner_id, index, chunk_infos, model_name)
         if index is not None and chunk_infos:
             t_enc = time.perf_counter()
-            query_embeddings = encode_chunks(query_chunks)
+            query_embeddings = encode_chunks(query_chunks, model_name=model_name)
             logger.info("find_matches: query encoding %.3fs", time.perf_counter() - t_enc)
 
             faiss_results = search_faiss(index, chunk_infos, query_embeddings, k=DEFAULT_TOP_K)
@@ -642,7 +730,7 @@ def find_matches(
                 futures = {
                     pool.submit(
                         _match_query_chunk_faiss, qi, query_chunks[qi],
-                        faiss_results[qi], threshold, min_lexical, min_fingerprint,
+                        faiss_results[qi], threshold, min_lexical, min_fingerprint, model_name,
                     ): qi
                     for qi in range(len(query_chunks))
                 }
@@ -668,7 +756,7 @@ def find_matches(
 
     # Brute-force path: parallel comparison of each query chunk against every repo chunk.
     t_enc = time.perf_counter()
-    query_embeddings = encode_chunks(query_chunks)
+    query_embeddings = encode_chunks(query_chunks, model_name=model_name)
     logger.info("find_matches: query encoding %.3fs", time.perf_counter() - t_enc)
 
     t_par = time.perf_counter()
@@ -677,7 +765,7 @@ def find_matches(
         futures = {
             pool.submit(
                 _match_query_chunk_bruteforce, qi, query_embeddings[qi],
-                query_chunks[qi], repo_chunks, threshold, min_lexical, min_fingerprint,
+                query_chunks[qi], repo_chunks, threshold, min_lexical, min_fingerprint, model_name,
             ): qi
             for qi in range(len(query_chunks))
         }

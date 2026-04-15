@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import axios from 'axios';
-import { FileText, ChevronDown, ChevronUp, Trash2, Eye, X, RefreshCw, Folder, FolderOpen, Search, FolderPlus, ArrowRight } from 'lucide-react';
+import { FileText, ChevronDown, ChevronUp, Trash2, Eye, X, RefreshCw, Folder, FolderOpen, Search, FolderPlus, ArrowRight, FilePlus } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
 const formatDate = (iso) => {
@@ -13,11 +13,29 @@ const formatDate = (iso) => {
     }
 };
 
-const FileNode = ({ 
+const FileNode = ({
     node, level = 0, viewing, setViewing, deleting, handleDelete, handleDeleteFolder,
-    selectedDocs, toggleDocSelection, toggleFolderSelection, isFolderSelected, isFolderPartiallySelected
+    selectedDocs, toggleDocSelection, toggleFolderSelection, isFolderSelected, isFolderPartiallySelected,
+    onAddToFolder
 }) => {
     const [isOpen, setIsOpen] = useState(false);
+    const fileInputRef = useRef(null);
+
+    const handleAddFiles = (e) => {
+        const files = Array.from(e.target.files || []);
+        if (files.length === 0 || !onAddToFolder) return;
+        const filesWithPath = files.map(file => {
+            const destPath = node.path ? `${node.path}/${file.name}` : file.name;
+            try {
+                Object.defineProperty(file, 'customPath', { value: destPath, configurable: true, writable: true });
+            } catch {
+                file.customPath = destPath;
+            }
+            return file;
+        });
+        onAddToFolder(filesWithPath);
+        e.target.value = '';
+    };
 
     if (!node.isFolder) {
         const doc = node.doc;
@@ -91,6 +109,25 @@ const FileNode = ({
                         <span className="text-xs font-medium text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">{node.childrenArray.length} items</span>
                     </div>
                     <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        {onAddToFolder && (
+                            <>
+                                <input
+                                    ref={fileInputRef}
+                                    type="file"
+                                    accept=".pdf"
+                                    multiple
+                                    className="hidden"
+                                    onChange={handleAddFiles}
+                                />
+                                <div
+                                    onClick={(e) => { e.stopPropagation(); fileInputRef.current?.click(); }}
+                                    className="p-1.5 rounded-lg hover:bg-brand-100 text-slate-400 hover:text-brand-600 transition-all"
+                                    title="Add files to this folder"
+                                >
+                                    <FilePlus className="w-4 h-4" />
+                                </div>
+                            </>
+                        )}
                         <div
                             onClick={(e) => { e.stopPropagation(); handleDeleteFolder(node); }}
                             className="p-1.5 rounded-lg hover:bg-red-100 text-slate-400 hover:text-red-600 transition-all"
@@ -110,20 +147,21 @@ const FileNode = ({
                         className="overflow-hidden"
                     >
                         {node.childrenArray.map(child => (
-                            <FileNode 
-                                key={child.id || child.path} 
-                                node={child} 
-                                level={level + 1} 
-                                viewing={viewing} 
-                                setViewing={setViewing} 
-                                deleting={deleting} 
-                                handleDelete={handleDelete} 
-                                handleDeleteFolder={handleDeleteFolder} 
+                            <FileNode
+                                key={child.id || child.path}
+                                node={child}
+                                level={level + 1}
+                                viewing={viewing}
+                                setViewing={setViewing}
+                                deleting={deleting}
+                                handleDelete={handleDelete}
+                                handleDeleteFolder={handleDeleteFolder}
                                 selectedDocs={selectedDocs}
                                 toggleDocSelection={toggleDocSelection}
                                 toggleFolderSelection={toggleFolderSelection}
                                 isFolderSelected={isFolderSelected}
                                 isFolderPartiallySelected={isFolderPartiallySelected}
+                                onAddToFolder={onAddToFolder}
                             />
                         ))}
                     </motion.div>
@@ -133,7 +171,7 @@ const FileNode = ({
     );
 };
 
-const PastDocuments = ({ user, refreshKey = 0, adminRepoMode = false }) => {
+const PastDocuments = ({ user, refreshKey = 0, adminRepoMode = false, onAddToFolder }) => {
     const [documents, setDocuments] = useState([]);
     const [loading, setLoading] = useState(false);
     const [expanded, setExpanded] = useState(true);
@@ -477,19 +515,20 @@ const PastDocuments = ({ user, refreshKey = 0, adminRepoMode = false }) => {
                                 </div>
                             ) : (
                                 <div className="py-2">
-                                    <FileNode 
-                                        node={tree} 
-                                        level={0} 
-                                        viewing={viewing} 
-                                        setViewing={setViewing} 
-                                        deleting={deleting} 
-                                        handleDelete={handleDelete} 
+                                    <FileNode
+                                        node={tree}
+                                        level={0}
+                                        viewing={viewing}
+                                        setViewing={setViewing}
+                                        deleting={deleting}
+                                        handleDelete={handleDelete}
                                         handleDeleteFolder={handleDeleteFolder}
                                         selectedDocs={selectedDocs}
                                         toggleDocSelection={toggleDocSelection}
                                         toggleFolderSelection={toggleFolderSelection}
                                         isFolderSelected={isFolderSelected}
                                         isFolderPartiallySelected={isFolderPartiallySelected}
+                                        onAddToFolder={onAddToFolder}
                                     />
                                 </div>
                             )}
