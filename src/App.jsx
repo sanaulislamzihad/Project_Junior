@@ -20,7 +20,8 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000';
+// Empty string = relative URL (works from any IP/network automatically)
+const API_BASE = import.meta.env.VITE_API_URL || '';
 
 // The main plagiarism tool view (after auth)
 function MainApp() {
@@ -45,8 +46,6 @@ function MainApp() {
   const [diffResultJobId, setDiffResultJobId] = useState(null);
 
   const [compareAgainst, setCompareAgainst] = useState(user?.role === 'teacher' ? ['personal'] : ['university']);
-  // Teacher can choose where to upload: 'personal' (own DB) or 'university' (shared repo)
-  const [repoUploadTarget, setRepoUploadTarget] = useState('personal');
   const [checkDragActive, setCheckDragActive] = useState(false);
   const [checkInputMode, setCheckInputMode] = useState('file');
   const [checkText, setCheckText] = useState('');
@@ -123,6 +122,34 @@ function MainApp() {
       setStateHydrated(true);
     }
   }, [storageKey, user?.role]);
+
+  // Load saved results from DB on login (persists across logout)
+  useEffect(() => {
+    if (!user?.id || !user?.token) return;
+    axios.get(`${API_BASE}/jobs/saved?user_id=${user.id}`, {
+      headers: { Authorization: `Bearer ${user.token}` }
+    }).then(res => {
+      const saved = res.data?.results || [];
+      if (saved.length === 0) return;
+      setCheckQueue(q => {
+        const existingJobIds = new Set(q.map(i => i.jobId).filter(Boolean));
+        const newItems = saved
+          .filter(j => !existingJobIds.has(j.job_id))
+          .map(j => ({
+            id: crypto.randomUUID(),
+            file: null,
+            directText: null,
+            status: 'completed',
+            jobId: j.job_id,
+            result: j.result,
+            error: null,
+            savedFromDb: true,
+            savedAt: j.created_at,
+          }));
+        return newItems.length > 0 ? [...newItems, ...q] : q;
+      });
+    }).catch(() => {});
+  }, [user?.id, user?.token]);
 
   useEffect(() => {
     if (!stateHydrated || !storageKey) return;
@@ -322,7 +349,7 @@ function MainApp() {
       result: null,
       error: null,
       isRepoUpload: true,
-      repoTarget: user?.role === 'admin' ? 'university' : repoUploadTarget
+      repoTarget: user?.role === 'admin' ? 'university' : 'personal'
     }));
     setCheckQueue(q => [...q, ...newItems]);
     setAppMode('queue');
@@ -377,10 +404,7 @@ function MainApp() {
   };
 
   const handleLogout = () => {
-    if (storageKey) {
-      localStorage.removeItem(storageKey);
-      localStorage.removeItem(`${storageKey}:diff`);
-    }
+    // Do NOT clear localStorage — results are saved in DB and will reload on next login
     logout();
     navigate('/');
   };
@@ -694,12 +718,20 @@ function MainApp() {
                           if (files.length > 0) handleCheckFiles(files);
                           e.target.value = '';
                         }} accept=".pdf,.pptx" />
-                        <button 
+                        <button
                           onClick={() => {
                             const hasActive = checkQueue.some(i => i.status === 'analyzing' || i.status === 'pending');
                             if (hasActive) {
                               if (!window.confirm("Some files are still being processed. Are you sure you want to clear the entire queue?")) return;
                             }
+                            // Also delete saved results from DB
+                            checkQueue.forEach(i => {
+                              if (i.savedFromDb && i.jobId && user?.id && user?.token) {
+                                axios.delete(`${API_BASE}/jobs/saved/${i.jobId}?user_id=${user.id}`, {
+                                  headers: { Authorization: `Bearer ${user.token}` }
+                                }).catch(() => {});
+                              }
+                            });
                             setCheckQueue([]);
                             setAppMode('repo');
                           }}
@@ -738,9 +770,12 @@ function MainApp() {
                               {item.isRepoUpload && (
                                 <span className="text-[10px] bg-brand-100 text-brand-700 font-bold px-2 py-0.5 rounded-full">Repo Upload</span>
                               )}
+                              {item.savedFromDb && (
+                                <span className="text-[10px] bg-amber-100 text-amber-700 font-bold px-2 py-0.5 rounded-full">Saved Result</span>
+                              )}
                             </div>
-                            <h3 className="font-black text-slate-800 text-xl truncate" title={item.file?.name || "Direct Text Input"}>
-                              {item.file?.name || "Direct Text Input"}
+                            <h3 className="font-black text-slate-800 text-xl truncate" title={item.file?.name || item.result?.filename || "Direct Text Input"}>
+                              {item.file?.name || item.result?.filename || "Direct Text Input"}
                             </h3>
                             
                             {/* Inline Progress for active jobs */}
@@ -834,30 +869,15 @@ function MainApp() {
                           <div className="w-9 h-9 rounded-xl bg-emerald-100 flex items-center justify-center"><Database className="w-4 h-4 text-emerald-600" /></div>
                           <div>
                             <h2 className="font-bold text-slate-900 text-base">Add to Repository</h2>
-                            <p className="text-xs text-slate-500 font-medium font-medium">Fast indexing for future checks</p>
+                            <p className="text-xs text-slate-500 font-medium">Fast indexing for future checks</p>
                           </div>
                         </div>
-                        {/* Teacher: choose upload destination */}
+                        {/* Teacher always uploads to Personal DB only */}
                         {user?.role === 'teacher' && (
-                          <div className="px-6 pt-5 pb-2">
-                            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-3">Upload Destination</p>
-                            <div className="flex gap-2">
-                              <button
-                                type="button"
-                                onClick={() => setRepoUploadTarget('personal')}
-                                className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl border-2 text-xs font-black transition-all ${repoUploadTarget === 'personal' ? 'border-teal-500 bg-teal-50 text-teal-700' : 'border-slate-200 text-slate-400 hover:border-slate-300'}`}
-                              >
-                                <FolderOpen className="w-4 h-4" />
-                                My Personal DB
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => setRepoUploadTarget('university')}
-                                className={`flex-1 flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl border-2 text-xs font-black transition-all ${repoUploadTarget === 'university' ? 'border-teal-500 bg-teal-50 text-teal-700' : 'border-slate-200 text-slate-400 hover:border-slate-300'}`}
-                              >
-                                <Database className="w-4 h-4" />
-                                University Repo
-                              </button>
+                          <div className="px-6 pt-4 pb-1">
+                            <div className="flex items-center gap-2 px-3 py-2 bg-slate-50 rounded-xl border border-slate-200">
+                              <FolderOpen className="w-4 h-4 text-teal-500 shrink-0" />
+                              <p className="text-xs font-bold text-slate-500">Uploads go to your <span className="text-teal-600">Personal DB</span> only</p>
                             </div>
                           </div>
                         )}

@@ -40,6 +40,11 @@ DEVICE = _detect_device()
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))
 MODEL_CACHE_DIR = os.path.join(_THIS_DIR, "model_cache")
 
+# Force fully offline mode — use cached model, never contact HuggingFace
+os.environ["HF_HUB_OFFLINE"] = "1"
+os.environ["TRANSFORMERS_OFFLINE"] = "1"
+os.environ["HF_DATASETS_OFFLINE"] = "1"
+
 # Optional import of FAISS index module; if missing or FAISS not installed, we use brute-force only.
 try:
     import faiss_index as _faiss_mod
@@ -346,7 +351,12 @@ def _get_model():
             if _MODEL is None:
                 from sentence_transformers import SentenceTransformer
                 os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
-                _MODEL = SentenceTransformer(EMBEDDING_MODEL, cache_folder=MODEL_CACHE_DIR, device=DEVICE)
+                _MODEL = SentenceTransformer(
+                    EMBEDDING_MODEL,
+                    cache_folder=MODEL_CACHE_DIR,
+                    device=DEVICE,
+                    local_files_only=True,
+                )
                 logger.info("SentenceTransformer loaded on device: %s", DEVICE)
     return _MODEL
 
