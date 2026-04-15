@@ -1,4 +1,5 @@
 @echo off
+setlocal enabledelayedexpansion
 title NSU PlagiChecker Server
 color 0A
 cd /d "%~dp0"
@@ -59,7 +60,7 @@ if errorlevel 1 (
 
 REM ---- Install Node packages if not installed ----
 if not exist "node_modules\vite" (
-    echo  [+] Installing Node.js packages... (first time only, may take a few minutes)
+    echo  [+] Installing Node.js packages... (first time only)
     call npm install
     if errorlevel 1 (
         echo  [ERROR] npm install failed.
@@ -83,23 +84,37 @@ if not exist "dist\index.html" (
     echo.
 )
 
-REM ---- Get local IP for display ----
-for /f "tokens=2 delims=:" %%a in ('ipconfig ^| findstr /i "IPv4"') do (
-    set LOCAL_IP=%%a
-    goto :found_ip
+REM ---- Show ALL network addresses ----
+echo  -------------------------------------------------------
+echo   Share one of these links with students:
+echo  -------------------------------------------------------
+echo.
+echo   This PC only:
+echo     http://localhost:8000
+echo.
+echo   Other PCs on the network (use any of these):
+
+for /f "tokens=2 delims=:" %%A in ('ipconfig ^| findstr /i "IPv4"') do (
+    set IP=%%A
+    set IP=!IP: =!
+    echo     http://!IP!:8000
 )
-:found_ip
-set LOCAL_IP=%LOCAL_IP: =%
 
+echo.
 echo  -------------------------------------------------------
-echo   Open in browser (this PC):     http://localhost:8000
-echo   Open from other PCs (WiFi):    http://%LOCAL_IP%:8000
+echo   Students: open the link above in any browser
+echo   Make sure everyone is on the same WiFi/LAN
 echo  -------------------------------------------------------
 echo.
-echo  Press Ctrl+C to stop the server.
-echo.
 
+REM ---- Launch server in a separate background window ----
+echo  [+] Starting server in background...
 cd backend
-python -m uvicorn main:app --host 0.0.0.0 --port 8000
+start "NSU PlagiChecker - DO NOT CLOSE" /min python -m uvicorn main:app --host 0.0.0.0 --port 8000
 
+echo.
+echo  [+] Server is running in the background.
+echo  [+] You can close THIS window safely.
+echo  [+] To STOP the server, run stop.bat
+echo.
 pause

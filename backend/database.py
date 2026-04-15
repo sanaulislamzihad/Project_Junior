@@ -124,3 +124,83 @@ class DatabaseManager:
         exists = cursor.fetchone()[0] > 0
         conn.close()
         return exists
+
+    # ==================== JOB RESULTS (persistent across logout) ====================
+
+    def _ensure_job_results_table(self, cursor):
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS job_results (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                job_id TEXT NOT NULL UNIQUE,
+                filename TEXT,
+                result_json TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+
+    def save_job_result(self, user_id: int, job_id: str, filename: str, result_data: dict) -> bool:
+        """Save a completed analysis result so it survives logout."""
+        import json
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            self._ensure_job_results_table(cursor)
+            conn.commit()
+            cursor.execute(
+                "INSERT OR REPLACE INTO job_results (user_id, job_id, filename, result_json) VALUES (?, ?, ?, ?)",
+                (user_id, job_id, filename, json.dumps(result_data))
+            )
+            conn.commit()
+            return True
+        except Exception:
+            return False
+        finally:
+            conn.close()
+
+    def get_user_job_results(self, user_id: int, limit: int = 100) -> List[Dict]:
+        """Fetch all saved results for a user (newest first)."""
+        import json
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            self._ensure_job_results_table(cursor)
+            conn.commit()
+            cursor.execute(
+                "SELECT job_id, filename, result_json, created_at FROM job_results WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
+                (user_id, limit)
+            )
+            rows = cursor.fetchall()
+            results = []
+            for row in rows:
+                try:
+                    results.append({
+                        "job_id": row[0],
+                        "filename": row[1],
+                        "result": json.loads(row[2]),
+                        "created_at": row[3],
+                    })
+                except Exception:
+                    pass
+            return results
+        except Exception:
+            return []
+        finally:
+            conn.close()
+
+    def delete_job_result(self, user_id: int, job_id: str) -> bool:
+        """Delete a saved result for a user."""
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        try:
+            self._ensure_job_results_table(cursor)
+            cursor.execute(
+                "DELETE FROM job_results WHERE user_id = ? AND job_id = ?",
+                (user_id, job_id)
+            )
+            conn.commit()
+            return cursor.rowcount > 0
+        except Exception:
+            return False
+        finally:
+            conn.close()

@@ -268,6 +268,28 @@ def health_check():
     return {"status": "active", "mode": "NSU-PlagiChecker"}
 
 
+# ==================== SAVED JOB RESULTS ====================
+
+@app.get("/jobs/saved")
+def get_saved_jobs(user_id: int, request: Request):
+    """Fetch all saved analysis results for a user (persists across logout)."""
+    current_user = require_auth(request)
+    if current_user["id"] != user_id and current_user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Access denied.")
+    results = db.get_user_job_results(user_id)
+    return {"results": results}
+
+
+@app.delete("/jobs/saved/{job_id}")
+def delete_saved_job(job_id: str, user_id: int, request: Request):
+    """Delete a saved result."""
+    current_user = require_auth(request)
+    if current_user["id"] != user_id and current_user["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Access denied.")
+    db.delete_job_result(user_id, job_id)
+    return {"success": True}
+
+
 @app.get("/artifacts/{artifact_name}")
 def get_artifact(artifact_name: str):
     safe_name = os.path.basename(artifact_name)
@@ -385,6 +407,7 @@ async def _run_analysis(
     file_path_stored: str,
     role: str,
     direct_text: str | None = None,
+    submitted_by: int | None = None,
 ):
     """
     Background task: runs the full analysis pipeline.
@@ -580,6 +603,12 @@ async def _run_analysis(
         }
         analysis_results[job_id] = {"data": result, "created_at": time.time()}
 
+        # Persist result to DB (survives logout) — strip heavy base64 fields
+        if submitted_by and not will_save:
+            persistent = {k: v for k, v in result.items()
+                          if k not in ("source_pdf_base64", "highlighted_pdf_base64", "source_text")}
+            db.save_job_result(submitted_by, job_id, original_filename, persistent)
+
         await queue.put({"progress": 100, "stage": "Done"})
 
     except Exception as e:
@@ -633,7 +662,7 @@ async def analyze_document(
         if repo_type == "both":
             raise HTTPException(status_code=400, detail="Cannot save to 'both' repos at once. Choose one.")
         if repo_type == "university" and role != "admin":
-            raise HTTPException(status_code=403, detail="Only admin can upload to Whole University repository.")
+            raise HTTPException(status_code=403, detail="Only admin can upload to the University repository.")
         if repo_type == "personal":
             if role != "teacher":
                 raise HTTPException(status_code=403, detail="Only teacher can upload to Personal repository.")
@@ -664,6 +693,11 @@ async def analyze_document(
     job_id = str(uuid.uuid4())
     jobs[job_id] = {"queue": asyncio.Queue(), "created_at": time.time()}
 
+    try:
+        submitted_by_int = int(user_id.strip()) if user_id and user_id.strip() else None
+    except ValueError:
+        submitted_by_int = None
+
     background_tasks.add_task(
         _run_analysis,
         job_id=job_id,
@@ -676,6 +710,7 @@ async def analyze_document(
         file_path_stored=file_path_stored,
         role=role,
         direct_text=direct_text if has_text else None,
+        submitted_by=submitted_by_int,
     )
 
     return {"job_id": job_id}
