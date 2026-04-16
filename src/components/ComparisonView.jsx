@@ -56,14 +56,14 @@ const ComparisonView = ({ data, suspectFile, onReset }) => {
     const gaugeColor = similarityPct >= 70 ? '#10b981' : similarityPct >= 40 ? '#f59e0b' : '#ef4444';
 
     const pdfSource = suspectFile || (data.highlighted_pdf_url
-        ? `http://localhost:8000${data.highlighted_pdf_url}`
+        ? data.highlighted_pdf_url
         : null);
     const interactiveHighlights = data.highlight_summary?.located_sentences || [];
 
     const downloadReport = async () => {
         setReportLoading(true);
         try {
-            const res = await fetch('http://localhost:8000/compare/report', {
+            const res = await fetch('/compare/report', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data),

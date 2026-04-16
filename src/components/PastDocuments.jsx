@@ -195,7 +195,7 @@ const PastDocuments = ({ user, refreshKey = 0, adminRepoMode = false, onAddToFol
         try {
             const params = new URLSearchParams({ repo_type: repoType });
             if (ownerId != null && ownerId !== '') params.append('owner_id', String(ownerId));
-            const res = await axios.get(`http://localhost:8000/documents/list?${params}`);
+            const res = await axios.get(`/documents/list?${params}`);
             setDocuments(res.data.documents || []);
             setSelectedDocs([]); // Clear selection on fetch
         } catch (err) {
@@ -222,7 +222,7 @@ const PastDocuments = ({ user, refreshKey = 0, adminRepoMode = false, onAddToFol
         try {
             const params = new URLSearchParams({ repo_type: repoType });
             if (ownerId != null && ownerId !== '') params.append('owner_id', String(ownerId));
-            await axios.delete(`http://localhost:8000/documents/${documentId}?${params}`);
+            await axios.delete(`/documents/${documentId}?${params}`);
             setDocuments((prev) => prev.filter((d) => d.document_id !== documentId));
             setSelectedDocs(prev => prev.filter(id => id !== documentId));
             setViewing(null);
@@ -249,7 +249,7 @@ const PastDocuments = ({ user, refreshKey = 0, adminRepoMode = false, onAddToFol
             for (const doc of docsToDelete) {
                 const params = new URLSearchParams({ repo_type: repoType });
                 if (ownerId != null && ownerId !== '') params.append('owner_id', String(ownerId));
-                await axios.delete(`http://localhost:8000/documents/${doc.document_id}?${params}`);
+                await axios.delete(`/documents/${doc.document_id}?${params}`);
             }
             setDocuments((prev) => prev.filter((d) => !docsToDelete.some(x => x.document_id === d.document_id)));
             setSelectedDocs(prev => prev.filter(id => !docsToDelete.some(x => x.document_id === id)));
@@ -275,7 +275,7 @@ const PastDocuments = ({ user, refreshKey = 0, adminRepoMode = false, onAddToFol
                 const params = new URLSearchParams({ repo_type: repoType });
                 if (ownerId != null && ownerId !== '') params.append('owner_id', String(ownerId));
                 
-                await axios.put(`http://localhost:8000/documents/${docId}/move?${params}`, { new_path: newPath });
+                await axios.put(`/documents/${docId}/move?${params}`, { new_path: newPath });
             }));
             
             setMovingDocs(false);

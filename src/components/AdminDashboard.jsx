@@ -85,7 +85,7 @@ const AdminDashboard = () => {
             if (user?.id) formData.append('user_id', String(user.id));
             
             try {
-                const response = await axios.post('http://localhost:8000/analyze', formData, {
+                const response = await axios.post('/analyze', formData, {
                     headers: { 'Content-Type': 'multipart/form-data' },
                 });
                 setAdminQueue(q => q.map(i => i.id === item.id ? { ...i, jobId: response.data.job_id } : i));

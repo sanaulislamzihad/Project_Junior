@@ -66,7 +66,7 @@ const ReportView = ({ data, pdfFile, onReset }) => {
     const downloadTurnitinReport = async () => {
         setReportLoading(true);
         try {
-            const res = await fetch('http://localhost:8000/analyze/report', {
+            const res = await fetch('/analyze/report', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data),
