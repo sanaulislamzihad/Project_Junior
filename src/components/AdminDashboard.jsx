@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useModal } from '../context/ModalContext';
 import { getUsers, addUser, removeUser } from '../data/users';
 import UploadZone from './UploadZone';
 import PastDocuments from './PastDocuments';
@@ -15,6 +16,7 @@ import AnalyzingProgress from './AnalyzingProgress';
 
 const AdminDashboard = () => {
     const { user, logout } = useAuth();
+    const { showAlert, showConfirm } = useModal();
     const [appMode, setAppMode] = useState('manage-users'); // 'manage-users' | 'manage-repo'
     const [users, setUsers] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -165,13 +167,12 @@ const AdminDashboard = () => {
     };
 
     const handleRemoveUser = async (userId, userName) => {
-        if (window.confirm(`Are you sure you want to remove "${userName}"? This action cannot be undone.`)) {
-            try {
-                await removeUser(userId);
-                await refreshUsers();
-            } catch (error) {
-                alert('Failed to remove user: ' + (error.response?.data?.detail || 'Server error'));
-            }
+        if (!await showConfirm(`Are you sure you want to remove "${userName}"? This action cannot be undone.`, 'Remove User')) return;
+        try {
+            await removeUser(userId);
+            await refreshUsers();
+        } catch (error) {
+            await showAlert('Failed to remove user: ' + (error.response?.data?.detail || 'Server error'), 'Error', 'error');
         }
     };
 
@@ -535,11 +536,11 @@ const AdminDashboard = () => {
                                         {adminQueue.filter(i => i.status !== 'completed' && i.status !== 'error').length > 0 && <div className="w-4 h-4 rounded-full border-2 border-brand-500 border-t-transparent animate-spin"/>}
                                         {adminQueue.filter(i => i.status === 'completed').length} / {adminQueue.length} Finished
                                     </div>
-                                    <button 
-                                        onClick={() => {
+                                    <button
+                                        onClick={async () => {
                                             const hasActive = adminQueue.some(i => i.status === 'analyzing' || i.status === 'pending');
                                             if (hasActive) {
-                                                if (!window.confirm("Some files are still being processed. Are you sure you want to clear the entire queue?")) return;
+                                                if (!await showConfirm("Some files are still being processed. Are you sure you want to clear the entire queue?")) return;
                                             }
                                             setAdminQueue([]);
                                             setAppMode('manage-repo');

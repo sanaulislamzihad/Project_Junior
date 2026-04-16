@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { useModal } from '../context/ModalContext';
 import {
     FileText, RotateCcw, ArrowLeft, Download,
     ShieldCheck, AlertTriangle, ShieldAlert,
@@ -46,6 +47,7 @@ function MiniBar({ value, color }) {
 }
 
 const ComparisonView = ({ data, suspectFile, onReset }) => {
+    const { showAlert } = useModal();
     const [activePanel, setActivePanel] = useState('extra');
     const [reportLoading, setReportLoading] = useState(false);
 
@@ -77,7 +79,7 @@ const ComparisonView = ({ data, suspectFile, onReset }) => {
             a.click();
             URL.revokeObjectURL(url);
         } catch (err) {
-            alert('Could not generate report: ' + err.message);
+            await showAlert('Could not generate report: ' + err.message, 'Error', 'error');
         } finally {
             setReportLoading(false);
         }

@@ -9,7 +9,7 @@ PyPDF2
 python-pptx
 sentence-transformers
 faiss-cpu
-torch
+
 numpy
 nltk
 reportlab

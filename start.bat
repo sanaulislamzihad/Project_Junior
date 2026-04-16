@@ -59,57 +59,60 @@ if errorlevel 1 (
 )
 
 REM =====================================================
-REM  GPU DETECTION + AUTO INSTALL CUDA PYTORCH
+REM  TORCH INSTALL (GPU if available, else CPU)
 REM =====================================================
-echo  [+] Checking for NVIDIA GPU...
-nvidia-smi >nul 2>&1
-if not errorlevel 1 (
 
-    REM GPU found — check if CUDA PyTorch already installed
+REM Check if torch is already installed
+python -c "import torch" >nul 2>&1
+if not errorlevel 1 goto torch_done
+
+echo  [+] Checking for NVIDIA GPU...
+set HAS_GPU=0
+nvidia-smi >nul 2>&1
+if not errorlevel 1 set HAS_GPU=1
+
+if "!HAS_GPU!"=="1" (
+    echo  [+] NVIDIA GPU found! Installing GPU version of PyTorch...
+    echo      (This requires internet - one time only)
+    echo.
+
+    REM Detect CUDA major version
+    set CUDA_VER=12
+    for /f "tokens=9" %%v in ('nvidia-smi ^| findstr /i "CUDA Version"') do (
+        set CUDA_FULL=%%v
+        set CUDA_VER=!CUDA_FULL:~0,2!
+    )
+    if "!CUDA_VER:~1,1!"=="." set CUDA_VER=!CUDA_VER:~0,1!
+    echo  [+] Detected CUDA version: !CUDA_VER!
+
+    if "!CUDA_VER!"=="11" (
+        pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118 -q
+    ) else if "!CUDA_VER!"=="12" (
+        pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 -q
+    ) else (
+        REM CUDA 13+ drivers support cu126 wheels (backward compatible)
+        pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126 -q
+        if errorlevel 1 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 -q
+    )
+
     python -c "import torch; exit(0 if torch.cuda.is_available() else 1)" >nul 2>&1
     if errorlevel 1 (
-        echo  [+] NVIDIA GPU found! Installing GPU version of PyTorch...
-        echo      (This requires internet — one time only)
-        echo.
-
-        REM Detect CUDA version from nvidia-smi
-        set CUDA_VER=12
-        for /f "tokens=9" %%v in ('nvidia-smi ^| findstr /i "CUDA Version"') do (
-            set CUDA_FULL=%%v
-            set CUDA_VER=!CUDA_FULL:~0,2!
-        )
-
-        echo  [+] Detected CUDA version: !CUDA_VER!
-
-        REM Choose correct torch wheel based on CUDA version
-        if "!CUDA_VER!"=="11" (
-            echo  [+] Installing PyTorch for CUDA 11.8...
-            pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118 -q
-        ) else (
-            echo  [+] Installing PyTorch for CUDA 12.4...
-            pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124 -q
-        )
-
-        python -c "import torch; exit(0 if torch.cuda.is_available() else 1)" >nul 2>&1
-        if errorlevel 1 (
-            echo  [!] GPU PyTorch install failed. Falling back to CPU.
-        ) else (
-            echo  [+] GPU PyTorch ready!
-        )
+        echo  [!] GPU PyTorch failed. Installing CPU version instead...
+        pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu -q
     ) else (
-        echo  [+] GPU already configured.
+        REM GPU confirmed — upgrade faiss-cpu to faiss-gpu for faster search
+        pip install faiss-gpu -q >nul 2>&1
+        for /f "tokens=1,* delims=," %%a in ('nvidia-smi --query-gpu^=name^,memory.total --format^=csv^,noheader 2^>nul') do echo  [GPU] %%a ^| VRAM: %%b
+        echo  [+] Running in GPU MODE - FAST!
     )
-
-    REM Show GPU info
-    for /f "tokens=1,* delims=," %%a in ('nvidia-smi --query-gpu^=name^,memory.total --format^=csv^,noheader 2^>nul') do (
-        echo  [GPU] %%a ^| VRAM: %%b
-    )
-    echo  [+] Running in GPU MODE - FAST!
-
 ) else (
-    echo  [!] No NVIDIA GPU found. Running on CPU.
+    echo  [+] No GPU found. Installing CPU version of PyTorch...
+    pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu -q
+    echo  [+] Running on CPU.
 )
 echo.
+
+:torch_done
 REM =====================================================
 
 REM ---- Install Node packages if not installed ----
@@ -164,7 +167,7 @@ echo.
 REM ---- Launch server in a separate background window ----
 echo  [+] Starting server in background...
 cd backend
-start "NSU PlagiChecker - DO NOT CLOSE" /min python -m uvicorn main:app --host 0.0.0.0 --port 8000
+start "NSU PlagiChecker - DO NOT CLOSE" python -m uvicorn main:app --host 0.0.0.0 --port 8000
 
 echo.
 echo  [+] Server is running in the background.

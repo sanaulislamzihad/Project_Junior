@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Routes, Route, useNavigate, Link } from 'react-router-dom';
 import axios from 'axios';
 import { useAuth } from './context/AuthContext';
+import { useModal } from './context/ModalContext';
 import UploadZone from './components/UploadZone';
 import PastDocuments from './components/PastDocuments';
 import ReportView from './components/ReportView';
@@ -26,6 +27,7 @@ const API_BASE = import.meta.env.VITE_API_URL || '';
 // The main plagiarism tool view (after auth)
 function MainApp() {
   const { user, logout } = useAuth();
+  const { showAlert, showConfirm } = useModal();
   const navigate = useNavigate();
   const storageKey = useMemo(
     () => (user?.id ? `plagichecker:mainapp:queue:${user.id}:${user.role}` : null),
@@ -110,7 +112,12 @@ function MainApp() {
         const allowedModes = user?.role === 'student' ? ['repo', 'diff'] : ['repo', 'manage-repo', 'diff', 'queue'];
         if (allowedModes.includes(saved?.appMode)) setAppMode(saved.appMode);
         if (saved?.compareAgainst) setCompareAgainst(saved.compareAgainst);
-        if (saved?.checkQueue) setCheckQueue(saved.checkQueue);
+        // Only restore active/pending items from localStorage.
+        // savedFromDb items are always reloaded fresh from the DB effect below.
+        if (saved?.checkQueue) {
+          const activeOnly = saved.checkQueue.filter(i => !i.savedFromDb);
+          setCheckQueue(activeOnly);
+        }
         // Do NOT restore viewingResultId — result data is stripped from
         // localStorage ("[CACHED]") so there is nothing to display.
         // Always land on the main dashboard after login / refresh.
@@ -163,18 +170,40 @@ function MainApp() {
         const existingJobIds = new Set(q.map(i => i.jobId).filter(Boolean));
         const newItems = saved
           .filter(j => !existingJobIds.has(j.job_id))
-          .map(j => ({
-            id: crypto.randomUUID(),
-            file: null,
-            directText: null,
-            status: 'completed',
-            jobId: j.job_id,
-            result: j.result,
-            error: null,
-            savedFromDb: true,
-            savedAt: j.created_at,
-          }));
-        return newItems.length > 0 ? [...newItems, ...q] : q;
+          .map(j => {
+            // Reconstruct folder grouping from file_name (e.g. "files/doc.pdf" → folder "files")
+            const fileName = j.result?.file_name || j.result?.filename || '';
+            const pathParts = fileName.split(/[/\\]/);
+            const hasFolder = pathParts.length > 1;
+            const folderName = hasFolder ? pathParts.slice(0, -1).join('/') : null;
+            const folderId = folderName ? `db-folder-${folderName}` : null;
+
+            return {
+              id: crypto.randomUUID(),
+              file: null,
+              directText: j.result?.direct_text ?? null,
+              status: 'completed',
+              jobId: j.job_id,
+              result: j.result,
+              error: null,
+              savedFromDb: true,
+              savedAt: j.created_at,
+              folderId,
+              folderName,
+            };
+          });
+
+        if (newItems.length === 0) return q;
+
+        // Merge: keep existing active/pending items, append DB items after them
+        // Sort DB items oldest-first so queue reads top-to-bottom in submission order
+        const sorted = [...newItems].sort(
+          (a, b) => new Date(a.savedAt || 0) - new Date(b.savedAt || 0)
+        );
+        // Active (non-saved) items stay at top; DB-saved items go below
+        const active = q.filter(i => !i.savedFromDb);
+        const existingDb = q.filter(i => i.savedFromDb);
+        return [...active, ...sorted, ...existingDb];
       });
     }).catch(() => {});
   }, [user?.id, user?.token]);
@@ -329,10 +358,10 @@ function MainApp() {
     setAppMode('queue');
   };
 
-  const handleCheckTextSubmit = () => {
+  const handleCheckTextSubmit = async () => {
     const trimmed = (checkText || '').trim();
     if (!trimmed) {
-      alert('Please enter text before starting analysis.');
+      await showAlert('Please enter text before starting analysis.', 'Missing Input');
       return;
     }
     const newItem = {
@@ -428,7 +457,7 @@ function MainApp() {
       setDiffJobId(response.data.job_id);
     } catch (error) {
       console.error("Error comparing docs:", error);
-      alert("Failed to compare documents.");
+      await showAlert("Failed to compare documents.", 'Error', 'error');
       setDiffAnalyzing(false);
     }
   };
@@ -850,9 +879,9 @@ function MainApp() {
                           }}
                         />
 <button
-                          onClick={() => {
+                          onClick={async () => {
                             const hasActive = checkQueue.some(i => i.status === 'analyzing' || i.status === 'pending');
-                            if (hasActive && !window.confirm("Some files are still being processed. Clear queue?")) return;
+                            if (hasActive && !await showConfirm("Some files are still being processed. Clear queue?")) return;
                             checkQueue.forEach(i => {
                               if (i.savedFromDb && i.jobId && user?.id && user?.token) {
                                 axios.delete(`${API_BASE}/jobs/saved/${i.jobId}?user_id=${user.id}`, { headers: { Authorization: `Bearer ${user.token}` } }).catch(() => {});
@@ -916,9 +945,9 @@ function MainApp() {
                                   <Upload className="w-3.5 h-3.5" /> Add
                                 </label>
                                 <button
-                                  onClick={() => {
+                                  onClick={async () => {
                                     const hasActive = items.some(i => i.status === 'analyzing');
-                                    if (hasActive && !window.confirm(`Remove entire "${folderName}" folder?`)) return;
+                                    if (hasActive && !await showConfirm(`Remove entire "${folderName}" folder?`)) return;
                                     items.forEach(i => {
                                       if (i.savedFromDb && i.jobId && user?.id && user?.token) {
                                         axios.delete(`${API_BASE}/jobs/saved/${i.jobId}?user_id=${user.id}`, { headers: { Authorization: `Bearer ${user.token}` } }).catch(() => {});

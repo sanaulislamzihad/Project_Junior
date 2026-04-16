@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { useModal } from '../context/ModalContext';
 import axios from 'axios';
 import { FileText, ChevronDown, ChevronUp, Trash2, Eye, X, RefreshCw, Folder, FolderOpen, Search, FolderPlus, ArrowRight, FilePlus } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -172,6 +173,7 @@ const FileNode = ({
 };
 
 const PastDocuments = ({ user, refreshKey = 0, adminRepoMode = false, onAddToFolder }) => {
+    const { showAlert, showConfirm } = useModal();
     const [documents, setDocuments] = useState([]);
     const [loading, setLoading] = useState(false);
     const [expanded, setExpanded] = useState(true);
@@ -217,7 +219,7 @@ const PastDocuments = ({ user, refreshKey = 0, adminRepoMode = false, onAddToFol
     }, [repoType, ownerId, refreshKey]);
 
     const handleDelete = async (documentId) => {
-        if (!confirm('Delete this document from the repository?')) return;
+        if (!await showConfirm('Delete this document from the repository?', 'Delete Document')) return;
         setDeleting(documentId);
         try {
             const params = new URLSearchParams({ repo_type: repoType });
@@ -227,14 +229,14 @@ const PastDocuments = ({ user, refreshKey = 0, adminRepoMode = false, onAddToFol
             setSelectedDocs(prev => prev.filter(id => id !== documentId));
             setViewing(null);
         } catch (err) {
-            alert(err.response?.data?.detail || 'Failed to delete document.');
+            await showAlert(err.response?.data?.detail || 'Failed to delete document.', 'Error', 'error');
         } finally {
             setDeleting(null);
         }
     };
 
     const handleDeleteFolder = async (node) => {
-        if (!confirm(`Delete folder "${node.name}" and all ${node.childrenArray ? 'its ' : ''}contents?`)) return;
+        if (!await showConfirm(`Delete folder "${node.name}" and all ${node.childrenArray ? 'its ' : ''}contents?`, 'Delete Folder')) return;
 
         const docsToDelete = [];
         const gatherDocs = (n) => {
@@ -255,7 +257,7 @@ const PastDocuments = ({ user, refreshKey = 0, adminRepoMode = false, onAddToFol
             setSelectedDocs(prev => prev.filter(id => !docsToDelete.some(x => x.document_id === id)));
             setViewing(null);
         } catch (e) {
-            alert("Some files failed to delete.");
+            await showAlert("Some files failed to delete.", 'Error', 'error');
         } finally {
             setDeleting(null);
         }
@@ -282,7 +284,7 @@ const PastDocuments = ({ user, refreshKey = 0, adminRepoMode = false, onAddToFol
             setMoveDestination('');
             fetchDocuments();
         } catch (err) {
-            alert("Failed to move some documents. Make sure the backend is running.");
+            await showAlert("Failed to move some documents. Make sure the backend is running.", 'Error', 'error');
         } finally {
             setIsMoving(false);
         }
