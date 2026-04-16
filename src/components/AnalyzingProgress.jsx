@@ -13,7 +13,7 @@ const AnalyzingProgress = ({ jobId, onComplete, title = "Analyzing Document...",
 
     const fetchResultFallback = async () => {
         try {
-            const res = await axios.get(`http://localhost:8000/analyze/result/${jobId}`);
+            const res = await axios.get(`/analyze/result/${jobId}`);
             doneRef.current = true;
             setProgress(100);
             setStage("Done");
@@ -35,7 +35,7 @@ const AnalyzingProgress = ({ jobId, onComplete, title = "Analyzing Document...",
 
         let serverErrorHandled = false;
 
-        const es = new EventSource(`http://localhost:8000/analyze/stream/${jobId}`);
+        const es = new EventSource(`/analyze/stream/${jobId}`);
         esRef.current = es;
 
         es.onmessage = async (event) => {
@@ -55,7 +55,7 @@ const AnalyzingProgress = ({ jobId, onComplete, title = "Analyzing Document...",
                     doneRef.current = true;
                     es.close();
                     try {
-                        const res = await axios.get(`http://localhost:8000/analyze/result/${jobId}`);
+                        const res = await axios.get(`/analyze/result/${jobId}`);
                         if (onComplete) onComplete(res.data);
                     } catch (err) {
                         setError("Failed to fetch result. " + (err.response?.data?.detail || err.message));

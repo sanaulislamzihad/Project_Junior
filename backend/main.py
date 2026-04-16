@@ -84,7 +84,7 @@ def group_matches_by_source(raw_matches: list) -> list:
             g["all_sentences"],
             key=lambda s: s.get("semantic_similarity", 0),
             reverse=True
-        )[:20]  # cap at 20 sentences per source
+        )
 
         result.append({
             "file_name": g["file_name"],

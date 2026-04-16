@@ -132,7 +132,7 @@ function MainApp() {
             setDiffData(cached);
           } else {
             fetchJobs.push(
-              axios.get(`http://localhost:8000/analyze/result/${saved.diffResultJobId}`)
+              axios.get(`${API_BASE}/analyze/result/${saved.diffResultJobId}`)
                 .then(res => setDiffData(res.data))
                 .catch(() => setDiffResultJobId(null))
             );
