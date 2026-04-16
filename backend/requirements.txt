@@ -1,3 +1,4 @@
+--extra-index-url https://download.pytorch.org/whl/cu126
 fastapi
 uvicorn
 sse-starlette
@@ -9,7 +10,12 @@ PyPDF2
 python-pptx
 sentence-transformers
 faiss-cpu
+<<<<<<< Updated upstream
 
+=======
+torch
+torchvision
+>>>>>>> Stashed changes
 numpy
 nltk
 reportlab
