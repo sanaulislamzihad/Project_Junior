@@ -86,8 +86,8 @@ if not errorlevel 1 (
             echo  [+] Installing PyTorch for CUDA 11.8...
             pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118 -q
         ) else (
-            echo  [+] Installing PyTorch for CUDA 12.1...
-            pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 -q
+            echo  [+] Installing PyTorch for CUDA 12.4...
+            pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124 -q
         )
 
         python -c "import torch; exit(0 if torch.cuda.is_available() else 1)" >nul 2>&1
