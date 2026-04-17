@@ -197,10 +197,11 @@ function MainApp() {
           };
         };
 
-        // Upgrade any localStorage "[CACHED]" items that now have a fresh DB copy,
-        // so the user can actually view their report after a refresh.
+        // Upgrade localStorage slim-result items to full DB data so reports are viewable.
+        // Matches on jobId; treats both old "[CACHED]" strings and new {_cached:true} objects.
+        const isCached = (r) => r === '[CACHED]' || (r && typeof r === 'object' && r._cached);
         const upgraded = q.map(item => {
-          if (item.jobId && dbByJobId.has(item.jobId) && !item.savedFromDb) {
+          if (item.jobId && dbByJobId.has(item.jobId) && !item.savedFromDb && isCached(item.result)) {
             const j = dbByJobId.get(item.jobId);
             return { ...item, result: j.result, savedFromDb: true, savedAt: j.created_at };
           }
@@ -227,10 +228,15 @@ function MainApp() {
   useEffect(() => {
     if (!stateHydrated || !storageKey) return;
     try {
-      // Just keep active jobs in queue, flush results from localStorage to avoid bloat
+      // Slim queue for localStorage: strip heavy result data but keep display metadata.
+      // Explicitly null `file` — File objects JSON-serialize as {} which breaks
+      // filename display (file?.name returns undefined on the empty object).
       const slimQueue = checkQueue.map(q => ({
         ...q,
-        result: q.result ? "[CACHED]" : null
+        file: null,
+        result: q.result && typeof q.result === 'object'
+          ? { _cached: true, filename: q.result.filename || q.result.file_name || null }
+          : (q.result || null),
       }));
 
       localStorage.setItem(
@@ -1009,7 +1015,7 @@ function MainApp() {
                                         <div className={`w-2 h-2 rounded-full shrink-0 ${item.status === 'completed' ? 'bg-emerald-400' : item.status === 'error' ? 'bg-red-400' : item.status === 'analyzing' ? 'bg-brand-400 animate-pulse' : 'bg-slate-300'}`} />
                                         <FileText className="w-4 h-4 text-slate-400 shrink-0" />
                                         <div className="flex-1 min-w-0">
-                                          <p className="text-sm font-bold text-slate-700 truncate">{item.file?.name || item.result?.filename || "Direct Text"}</p>
+                                          <p className="text-sm font-bold text-slate-700 truncate">{item.file?.name || item.result?.filename || item.result?.file_name || "Direct Text"}</p>
                                           {item.status === 'analyzing' && item.jobId && (
                                             <div className="mt-1">
                                               <AnalyzingProgress jobId={item.jobId} onComplete={(result) => handleItemComplete(item.id, result)} title="" subtitle="" hideTitle compact />
@@ -1071,7 +1077,7 @@ function MainApp() {
                               {item.modelName && item.modelName !== 'default' && <span className="text-[10px] bg-violet-100 text-violet-700 font-bold px-2 py-0.5 rounded-full">Paraphrase</span>}
                               {item.status === 'analyzing' && <span className="w-2 h-2 rounded-full bg-brand-500 animate-pulse" />}
                             </div>
-                            <h3 className="font-black text-slate-800 text-xl truncate">{item.file?.name || item.result?.filename || "Direct Text Input"}</h3>
+                            <h3 className="font-black text-slate-800 text-xl truncate">{item.file?.name || item.result?.filename || item.result?.file_name || (item.directText != null ? "Direct Text Input" : "Direct Text Input")}</h3>
                             {item.status === 'analyzing' && item.jobId && (
                               <div className="mt-4 w-full max-w-2xl">
                                 <AnalyzingProgress jobId={item.jobId} onComplete={(result) => handleItemComplete(item.id, result)} title="" subtitle="" hideTitle />
