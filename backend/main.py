@@ -685,7 +685,7 @@ async def _run_analysis(
         }
         analysis_results[job_id] = {"data": result, "created_at": time.time()}
 
-        # Persist result to DB (survives logout) — strip heavy base64 fields
+        # Persist result to DB (survives logout) — strip heavy base64 fields.
         if submitted_by and not will_save:
             persistent = {k: v for k, v in result.items()
                           if k not in ("source_pdf_base64", "highlighted_pdf_base64", "source_text")}

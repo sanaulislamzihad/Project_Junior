@@ -103,13 +103,15 @@ const ReportView = ({ data, pdfFile, onReset }) => {
         }
     }, [data.source_pdf_base64, data.highlighted_pdf_base64]);
 
-    // Memoize the final source object to prevent react-pdf from re-loading 
+    // Memoize the final source object to prevent react-pdf from re-loading
     // and hitting "detached buffer" errors on unrelated re-renders.
+    // Fallback to highlighted_pdf_url for DB-saved results where base64 was stripped.
     const pdfSource = useMemo(() => {
         if (pdfFile) return pdfFile;
         if (pdfBytesFromBase64) return { data: pdfBytesFromBase64 };
+        if (data.highlighted_pdf_url) return data.highlighted_pdf_url;
         return null;
-    }, [pdfFile, pdfBytesFromBase64]);
+    }, [pdfFile, pdfBytesFromBase64, data.highlighted_pdf_url]);
 
 
     const interactiveHighlights = data.highlight_summary?.located_sentences || [];

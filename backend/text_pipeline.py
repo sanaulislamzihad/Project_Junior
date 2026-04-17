@@ -36,6 +36,12 @@ try:
 except ImportError:
     Presentation = None
 
+# NLTK sentence tokenizer (lazy-loaded)
+try:
+    import nltk as _nltk_module
+except ImportError:
+    _nltk_module = None
+
 
 # =============================================================================
 # METADATA STRUCTURE
@@ -263,6 +269,29 @@ def remove_boilerplate_phrases(text: str) -> str:
     return t.strip()
 
 
+# Matches "Section 2 - Paraphrased Text:" style labels used in test/structured documents.
+# These labels create false similarity when two documents share the same section numbering scheme.
+_SECTION_HEADER_PATTERN = re.compile(
+    r"Section\s+\d+\s*[-–—]\s*[^:\n]{0,80}:\s*",
+    flags=re.IGNORECASE,
+)
+
+
+def strip_section_headers(text: str) -> str:
+    """
+    Remove structured section labels such as 'Section 2 - Paraphrased Text:' before
+    embedding.  These labels add vocabulary noise that pulls unrelated chunks toward
+    each other purely because they share the same numbering scheme.
+    Applied to BOTH query and repository text so comparisons remain fair.
+    """
+    if not text or not isinstance(text, str):
+        return text or ""
+    cleaned = _SECTION_HEADER_PATTERN.sub(" ", text)
+    # Also strip bare chapter/section markers like "1." or "2.1" at line start
+    cleaned = re.sub(r"(?m)^\s*\d+(\.\d+)*\.?\s+", " ", cleaned)
+    return re.sub(r"\s+", " ", cleaned).strip()
+
+
 # Patterns and phrases for institutional metadata (student info, course codes, etc.).
 _METADATA_IGNORE_PATTERNS = [
     # Student identifiers
@@ -405,8 +434,11 @@ def apply_file_processing_layer(
     t = remove_header_footer_lines(t)
     t = remove_references_section(t)
     t = remove_institutional_metadata(t)
-    # Remove boilerplate phrases common in weekly reports / templates so they do not dominate similarity.
+    # Remove boilerplate phrases common in weekly reports / templates.
     t = remove_boilerplate_phrases(t)
+    # Strip section labels ("Section 2 - Paraphrased Text:") before embedding so they
+    # don't create false similarity via shared numbering/labelling vocabulary.
+    t = strip_section_headers(t)
     t = clean_text(t)
     if lowercase:
         t = normalize_lowercase(t)
@@ -529,6 +561,109 @@ def chunk_by_sentences(text: str, min_length: int = 3) -> List[str]:
     return sentences if sentences else [text.strip()] if text.strip() else []
 
 
+_SENT_TOKENIZE_FN = None
+
+
+def _get_sent_tokenizer():
+    """
+    Lazy-load NLTK punkt tokenizer.  Falls back to a simple regex splitter so the
+    rest of the pipeline works even when NLTK data is not available.
+    """
+    global _SENT_TOKENIZE_FN
+    if _SENT_TOKENIZE_FN is not None:
+        return _SENT_TOKENIZE_FN
+    if _nltk_module is not None:
+        try:
+            # punkt_tab is the newer resource name in NLTK >= 3.9
+            try:
+                _nltk_module.data.find("tokenizers/punkt_tab")
+            except LookupError:
+                try:
+                    _nltk_module.download("punkt_tab", quiet=True)
+                except Exception:
+                    pass
+            # Older resource name as a fallback
+            try:
+                _nltk_module.data.find("tokenizers/punkt")
+            except LookupError:
+                _nltk_module.download("punkt", quiet=True)
+            _SENT_TOKENIZE_FN = _nltk_module.sent_tokenize
+            return _SENT_TOKENIZE_FN
+        except Exception:
+            pass
+
+    # Regex fallback when NLTK is unavailable
+    def _regex_sent_tokenize(text: str) -> List[str]:
+        parts = re.split(r"(?<=[.!?])\s+", text)
+        return [p.strip() for p in parts if p.strip()]
+
+    _SENT_TOKENIZE_FN = _regex_sent_tokenize
+    return _SENT_TOKENIZE_FN
+
+
+def chunk_by_sentences_nltk(
+    text: str,
+    sentences_per_chunk: int = 2,
+    min_chunk_length: int = 30,
+) -> List[str]:
+    """
+    Split text into chunks of complete sentences using NLTK punkt tokenizer.
+
+    sentences_per_chunk: how many sentences per chunk (1-3 recommended).
+        2 is a good default — large enough for semantic context, small enough to
+        pinpoint the plagiarised passage precisely.
+    min_chunk_length: discard chunks shorter than this many characters (noise filter).
+
+    Why sentence-level?  Fixed word-count chunks silently split mid-sentence, so
+    "…prevent unauthorized" (end of Section 5) ends up in the same chunk as
+    "Section 6 — Original Content…", producing false positives.
+    """
+    text = clean_text(text)
+    if not text:
+        return []
+    tokenize = _get_sent_tokenizer()
+    raw_sentences = tokenize(text)
+    sentences = [s.strip() for s in raw_sentences if len(s.strip()) >= min_chunk_length]
+    if not sentences:
+        return [text] if len(text) >= min_chunk_length else []
+    chunks: List[str] = []
+    for i in range(0, len(sentences), sentences_per_chunk):
+        chunk = " ".join(sentences[i : i + sentences_per_chunk])
+        if len(chunk) >= min_chunk_length:
+            chunks.append(chunk)
+    return chunks
+
+
+def chunk_by_pages_sentences(
+    pages: List[Tuple[int, str]],
+    sentences_per_chunk: int = 2,
+    min_chunk_length: int = 30,
+) -> List[str]:
+    """
+    Page-aware sentence chunking: respect both page boundaries AND sentence boundaries.
+
+    For each page the text is tokenized into sentences first, then grouped into
+    chunks of `sentences_per_chunk` complete sentences.  A chunk never crosses a
+    page boundary, so section-header bleed (Section 5 text leaking into Section 6
+    chunk) is eliminated.
+
+    This replaces chunk_by_pages() as the default PDF chunking strategy.
+    """
+    tokenize = _get_sent_tokenizer()
+    all_chunks: List[str] = []
+    for _page_num, page_text in pages:
+        page_clean = clean_text(page_text).strip()
+        if not page_clean:
+            continue
+        raw_sentences = tokenize(page_clean)
+        sentences = [s.strip() for s in raw_sentences if len(s.strip()) >= min_chunk_length]
+        for i in range(0, len(sentences), sentences_per_chunk):
+            chunk = " ".join(sentences[i : i + sentences_per_chunk])
+            if len(chunk) >= min_chunk_length:
+                all_chunks.append(chunk)
+    return all_chunks
+
+
 def chunk_by_paragraphs(full_text: str, fallback_max_words: int = 80) -> List[str]:
     """
     Split by paragraph (double newline). Each chunk = one paragraph so comparison is meaningful.
@@ -605,34 +740,45 @@ def process_document(
     path = Path(file_path)
     ext = path.suffix.lower()
 
-    if ext == ".pdf" and chunk_strategy in ("words", "pages"):
-        # PAGE-AWARE CHUNKING: extract page-by-page, clean each page separately,
-        # then split large pages into sub-chunks. This ensures 300-page PDFs
-        # get hundreds of chunks instead of 10-15.
+    if ext == ".pdf" and chunk_strategy in ("words", "pages", "sentences_nltk"):
+        # PAGE-AWARE SENTENCE CHUNKING (replaces fixed word-count chunking).
+        # Each page is independently tokenized into sentences using NLTK, then
+        # grouped into chunks of 2 complete sentences.  This eliminates the
+        # "chunk boundary bleed" bug where the tail of one section bled into the
+        # opening of the next section inside the same chunk.
         pages = extract_text_from_pdf(file_path, method=pdf_method)
         num_pages = len(pages)
         file_type = "pdf"
         full_text = pdf_pages_to_full_text(pages)
         raw_length = len(full_text)
 
-        # Clean each page individually (preserves page structure)
-        # IMPORTANT: Keep original case for sentence-level matching.
-        # Lowercasing is done by embedding models internally; doing it here
-        # breaks sentence boundary detection ('. next' vs '. Next').
-        words_per_chunk = min(max_chunk_size, 200)
-        cleaned_pages = []
+        # Clean each page individually before sentence tokenisation.
+        # Keep original case — NLTK punkt relies on capitalisation for boundary
+        # detection; lowercasing here would break it.
+        cleaned_pages: List[Tuple[int, str]] = []
         for page_num, page_text in pages:
             cleaned_page = apply_file_processing_layer(
                 page_text, lowercase=False, remove_stopwords_opt=False
             )
             cleaned_pages.append((page_num, cleaned_page))
 
-        chunks = chunk_by_pages(
+        chunks = chunk_by_pages_sentences(
             cleaned_pages,
-            words_per_chunk=words_per_chunk,
-            overlap_words=overlap,
-            min_chunk_words=10,
+            sentences_per_chunk=2,
+            min_chunk_length=30,
         )
+
+        # Fall back to word-count chunking if sentence tokenisation produced nothing
+        # (e.g. scanned image-only PDF with very little text).
+        if not chunks:
+            words_per_chunk = min(max_chunk_size, 200)
+            chunks = chunk_by_pages(
+                cleaned_pages,
+                words_per_chunk=words_per_chunk,
+                overlap_words=overlap,
+                min_chunk_words=10,
+            )
+
         cleaned = apply_file_processing_layer(full_text, lowercase=False, remove_stopwords_opt=False)
 
     else:
@@ -643,8 +789,8 @@ def process_document(
 
         if chunk_strategy == "paragraphs":
             chunks = chunk_by_paragraphs(full_text)
-        elif chunk_strategy == "sentences":
-            chunks = chunk_by_sentences(cleaned)
+        elif chunk_strategy in ("sentences", "sentences_nltk"):
+            chunks = chunk_by_sentences_nltk(cleaned, sentences_per_chunk=2)
         elif chunk_strategy == "tokens_approx":
             chunks = chunk_by_tokens_approx(
                 cleaned,

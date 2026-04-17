@@ -18,6 +18,32 @@ logger = logging.getLogger(__name__)
 
 MAX_CONCURRENT_WORKERS = min(4, os.cpu_count() or 4)
 
+# =============================================================================
+# SIMILARITY CONFIG — edit these constants to tune detection sensitivity
+# =============================================================================
+
+# Minimum semantic (cosine) similarity a sentence pair must reach to be considered
+# a match at all.  Below this we discard the candidate entirely (was ~0.35 before,
+# which caused "AI has revolutionised the world" ↔ "global trade" false positives).
+MIN_SEMANTIC_THRESHOLD: float = 0.55
+
+# Combined score a *chunk-level* match must reach to appear in the final report.
+# Slightly stricter than MIN_SEMANTIC_THRESHOLD so weak-but-valid sentences don't
+# inflate the per-document percentage.
+REPORT_THRESHOLD: float = 0.60
+
+# Hybrid score weights: semantic captures meaning, lexical catches word reuse.
+# 0.7 / 0.3 split favours meaning while still penalising topic-similar-but-distinct text.
+SEMANTIC_WEIGHT: float = 0.70
+LEXICAL_WEIGHT: float = 0.30
+
+# Lexical (Jaccard) score at or above this → treat as a verbatim / near-verbatim copy.
+# At 0.80 roughly 80 % of unique words overlap, which is a strong copy signal.
+EXACT_MATCH_LEXICAL_THRESHOLD: float = 0.80
+
+# Semantic score at or above this (with LOW lexical) → paraphrase, not word-for-word copy.
+PARAPHRASE_SEMANTIC_THRESHOLD: float = 0.70
+
 # ---------------------------------------------------------------------------
 # Available embedding models
 # ---------------------------------------------------------------------------
@@ -305,7 +331,7 @@ def _sentence_level_matches_precomputed(
             hard_floor = _get_thresholds(model_name)["sem_hard_floor"]
             if sem < hard_floor:
                 continue
-            score = (0.65 * sem) + (0.15 * lex) + (0.10 * fp) + (0.10 * winnowing_similarity(q_sentences[i].lower(), m_sentences[j].lower()))
+            score = _hybrid_score(sem, lex)
             if best is None or score > best["score"]:
                 best = {
                     "query_sentence": q_sentences[i],
@@ -313,6 +339,7 @@ def _sentence_level_matches_precomputed(
                     "semantic_similarity": round(float(sem), 4),
                     "lexical_similarity": round(float(lex), 4),
                     "fingerprint_similarity": round(float(fp), 4),
+                    "match_type": _match_type(sem, lex),
                     "score": score,
                 }
         if best is not None:
@@ -357,7 +384,7 @@ def _sentence_level_matches(
             hard_floor = _get_thresholds(model_name)["sem_hard_floor"]
             if sem < hard_floor:
                 continue
-            score = (0.65 * sem) + (0.15 * lex) + (0.10 * fp) + (0.10 * winnowing_similarity(q_sentences[i].lower(), m_sentences[j].lower()))
+            score = _hybrid_score(sem, lex)
             if best is None or score > best["score"]:
                 best = {
                     "query_sentence": q_sentences[i],
@@ -365,6 +392,7 @@ def _sentence_level_matches(
                     "semantic_similarity": round(float(sem), 4),
                     "lexical_similarity": round(float(lex), 4),
                     "fingerprint_similarity": round(float(fp), 4),
+                    "match_type": _match_type(sem, lex),
                     "score": score,
                 }
         if best is not None:
@@ -411,7 +439,7 @@ def _build_match_record(
         }]
 
     winnow = winnowing_similarity(query_text, matched_text)
-    combined = (0.60 * sem) + (0.15 * lex) + (0.15 * winnow) + (0.10 * fp)
+    combined = _hybrid_score(sem, lex)
     return {
         "query_chunk_index": query_chunk_index,
         "query_text_preview": query_text[:200] + ("..." if len(query_text) > 200 else ""),
@@ -451,7 +479,7 @@ def extract_top_similar_sentences(matches: List[dict], limit: Optional[int] = No
             seen.add(key)
             sem = float(sm.get("semantic_similarity") or 0.0)
             lex = float(sm.get("lexical_similarity") or 0.0)
-            score = (0.75 * sem) + (0.20 * lex) + (0.05 * ((sem_chunk + lex_chunk) / 2.0))
+            score = _hybrid_score(sem, lex)
             rows.append(
                 {
                     "your_text": q,
@@ -515,10 +543,10 @@ def _filter_chunks_by_embedding_dim(repo_chunks: List[dict], dim: int) -> List[d
 
 
 # Default thresholds (all-mpnet-base-v2 — sentence-level semantic model)
-DEFAULT_SEMANTIC_THRESHOLD = 0.60
+DEFAULT_SEMANTIC_THRESHOLD = REPORT_THRESHOLD        # 0.60 — chunk must reach this to be reported
 DEFAULT_MIN_LEXICAL = 0.08
 DEFAULT_MIN_FINGERPRINT = 0.05
-DEFAULT_SENTENCE_SEMANTIC = 0.42
+DEFAULT_SENTENCE_SEMANTIC = MIN_SEMANTIC_THRESHOLD   # 0.55 — individual sentences must pass this
 DEFAULT_SENTENCE_LEXICAL = 0.05
 
 # Per-model threshold overrides.
@@ -548,9 +576,64 @@ def _get_thresholds(model_name: str) -> dict:
         "min_fingerprint":    overrides.get("min_fingerprint",    DEFAULT_MIN_FINGERPRINT),
         "sentence_semantic":  overrides.get("sentence_semantic",  DEFAULT_SENTENCE_SEMANTIC),
         "sentence_lexical":   overrides.get("sentence_lexical",   DEFAULT_SENTENCE_LEXICAL),
-        "sem_hard_floor":     overrides.get("sem_hard_floor",     0.35),
+        "sem_hard_floor":     overrides.get("sem_hard_floor",     MIN_SEMANTIC_THRESHOLD),
         "lex_bypass":         overrides.get("lex_bypass",         0.05),
     }
+
+
+def _hybrid_score(sem: float, lex: float) -> float:
+    """
+    Compute the hybrid similarity score used everywhere in this pipeline.
+
+    Formula: (SEMANTIC_WEIGHT * sem) + (LEXICAL_WEIGHT * lex)
+    Boost:   exact copies (lex >= EXACT_MATCH_LEXICAL_THRESHOLD) get a 15 % lift
+             capped at 1.0 to reflect that verbatim text is more serious than a
+             purely semantic match at the same raw score.
+
+    Why 0.7 / 0.3?  Semantic alone flags topically-related-but-distinct documents
+    (e.g. "AI revolutionised the world" ↔ "global trade document" at 41 %).
+    Adding 30 % lexical weight anchors the score to actual word reuse.
+    """
+    base = (SEMANTIC_WEIGHT * sem) + (LEXICAL_WEIGHT * lex)
+    if lex >= EXACT_MATCH_LEXICAL_THRESHOLD:
+        base = min(1.0, base * 1.15)
+    return base
+
+
+def _match_type(sem: float, lex: float) -> str:
+    """
+    Classify a matched pair as 'exact', 'paraphrase', or 'similar'.
+
+    exact     : lex >= EXACT_MATCH_LEXICAL_THRESHOLD — verbatim or near-verbatim copy
+    paraphrase: sem >= PARAPHRASE_SEMANTIC_THRESHOLD AND lex < 0.30 — same idea, different words
+    similar   : everything else that passed MIN_SEMANTIC_THRESHOLD
+    """
+    if lex >= EXACT_MATCH_LEXICAL_THRESHOLD:
+        return "exact"
+    if sem >= PARAPHRASE_SEMANTIC_THRESHOLD and lex < 0.30:
+        return "paraphrase"
+    return "similar"
+
+
+def _contribution_weight(sem: float, lex: float) -> float:
+    """
+    Weighted contribution of a single matched chunk to the overall similarity %.
+
+    exact copy  (lex >= 0.80)          → 1.00  (full credit — verbatim plagiarism)
+    strong para (sem >= 0.70)          → 0.75  (clear paraphrase)
+    weak match  (sem >= 0.55 < 0.70)   → 0.45  (related but may be coincidental)
+    below floor                        → 0.00  (discarded)
+
+    Summing these weights and dividing by total query chunks gives a plagiarism
+    percentage that reflects match *severity*, not just match *count*.
+    """
+    if lex >= EXACT_MATCH_LEXICAL_THRESHOLD:
+        return 1.00
+    if sem >= PARAPHRASE_SEMANTIC_THRESHOLD:
+        return 0.75
+    if sem >= MIN_SEMANTIC_THRESHOLD:
+        return 0.45
+    return 0.00
 
 
 def _match_query_chunk_bruteforce(
@@ -575,8 +658,7 @@ def _match_query_chunk_bruteforce(
         sem = cosine_similarity(q_emb, np.frombuffer(rc["embedding"], dtype=np.float32))
         lex = lexical_similarity(q_lower, matched_text.lower())
         fp = fingerprint_similarity(q_lower, matched_text.lower())
-        winnow = winnowing_similarity(q_lower, matched_text.lower())
-        combined = (0.60 * sem) + (0.15 * lex) + (0.15 * winnow) + (0.10 * fp)
+        combined = _hybrid_score(sem, lex)
         sem_match = (sem >= threshold and lex >= min_lexical and fp >= min_fingerprint)
         lex_bypass = (lex >= lex_bypass_min)
         if sem_match or lex_bypass:
@@ -632,8 +714,7 @@ def _collect_candidates_bruteforce(
         sem = cosine_similarity(q_emb, np.frombuffer(rc["embedding"], dtype=np.float32))
         lex = lexical_similarity(q_lower, matched_text.lower())
         fp = fingerprint_similarity(q_lower, matched_text.lower())
-        winnow = winnowing_similarity(q_lower, matched_text.lower())
-        combined = (0.60 * sem) + (0.15 * lex) + (0.15 * winnow) + (0.10 * fp)
+        combined = _hybrid_score(sem, lex)
         if (sem >= threshold and lex >= min_lexical and fp >= min_fingerprint) or (lex >= lex_bypass_min):
             matches_per_doc.setdefault(doc_id, []).append(
                 {"combined": combined, "sem": sem, "lex": lex, "fp": fp, "rc": rc, "matched_text": matched_text}
@@ -680,8 +761,7 @@ def _collect_candidates_faiss(
         fp_val = fingerprint_similarity(q_lower, matched_text.lower())
         if not ((sem_val >= threshold and lex_val >= min_lexical and fp_val >= min_fingerprint) or (lex_val >= lex_bypass_min)):
             continue
-        winnow_val = winnowing_similarity(q_lower, matched_text.lower())
-        combined = (0.60 * sem_val) + (0.15 * lex_val) + (0.15 * winnow_val) + (0.10 * fp_val)
+        combined = _hybrid_score(sem_val, lex_val)
         matches_per_doc.setdefault(doc_id, []).append(
             {"combined": combined, "chunk_info": chunk_info, "matched_text": matched_text,
              "sem": sem_val, "lex": lex_val, "fp": fp_val}
@@ -731,8 +811,7 @@ def _match_query_chunk_faiss(
         lex_bypass = (lex_val >= lex_bypass_min)
         if not (sem_match or lex_bypass):
             continue
-        winnow_val = winnowing_similarity(q_lower, matched_text.lower())
-        combined = (0.60 * sem_val) + (0.15 * lex_val) + (0.15 * winnow_val) + (0.10 * fp_val)
+        combined = _hybrid_score(sem_val, lex_val)
         entry = {"combined": combined, "chunk_info": chunk_info,
                  "matched_text": matched_text,
                  "sem": sem_val, "lex": lex_val, "fp": fp_val}
@@ -838,8 +917,8 @@ def _batch_sentence_match(
                 "fingerprint_similarity": round(float(cand["fp"]), 4),
             }]
 
+        combined = _hybrid_score(cand["sem"], cand["lex"])
         winnow = winnowing_similarity(cand["q_text"], cand["matched_text"])
-        combined = (0.60 * cand["sem"]) + (0.15 * cand["lex"]) + (0.15 * winnow) + (0.10 * cand["fp"])
         all_matches.append({
             "query_chunk_index": cand["qi"],
             "query_text_preview": cand["q_text"][:200] + ("..." if len(cand["q_text"]) > 200 else ""),
@@ -857,34 +936,40 @@ def _batch_sentence_match(
         })
         built_qi.add(cand["qi"])
 
-    # Compute overall scores using top_per_qi
-    total_sem = total_lex = total_fp = total_overall = 0.0
+    # Compute overall similarity using weighted contributions.
+    # Each matched query chunk contributes a weight based on match severity:
+    #   exact copy (lex >= 0.80)       → 1.00
+    #   strong paraphrase (sem >= 0.70) → 0.75
+    #   weak match (sem >= 0.55)        → 0.45
+    # Unmatched chunks contribute 0.  This formula counts each query chunk ONCE
+    # (Problem 5) and weights severity rather than averaging raw scores (Problem 6).
+    total_sem = total_lex = total_fp = 0.0
+    total_weighted = 0.0
     matched_count = len(top_per_qi)
     for top in top_per_qi.values():
         sem = top["sem"] if isinstance(top, dict) else float(top)
         lex = top.get("lex", 0.0) if isinstance(top, dict) else 0.0
         fp = top.get("fp", 0.0) if isinstance(top, dict) else 0.0
-        winnow = winnowing_similarity(top.get("matched_text", ""), top.get("matched_text", "")) if isinstance(top, dict) else 0.0
-        combined = (0.60 * sem) + (0.15 * lex) + (0.15 * winnow) + (0.10 * fp)
         total_sem += sem
         total_lex += lex
         total_fp += fp
-        total_overall += combined
+        total_weighted += _contribution_weight(sem, lex)
 
     if matched_count:
-        match_rate = matched_count / n_query_chunks
         avg_sem = total_sem / matched_count
         avg_lex = total_lex / matched_count
         avg_fp = total_fp / matched_count
-        avg_comb = total_overall / matched_count
     else:
-        match_rate = avg_sem = avg_lex = avg_fp = avg_comb = 0.0
+        avg_sem = avg_lex = avg_fp = 0.0
+
+    # overall_similarity = sum(weights) / total_query_chunks * 100
+    overall_similarity = round((total_weighted / n_query_chunks) * 100, 2) if n_query_chunks else 0.0
 
     return (
-        round(match_rate * avg_sem * 100, 2),
-        round(match_rate * avg_lex * 100, 2),
-        round(match_rate * avg_fp * 100, 2),
-        round(match_rate * avg_comb * 100, 2),
+        round((matched_count / n_query_chunks) * avg_sem * 100, 2) if n_query_chunks else 0.0,
+        round((matched_count / n_query_chunks) * avg_lex * 100, 2) if n_query_chunks else 0.0,
+        round((matched_count / n_query_chunks) * avg_fp * 100, 2) if n_query_chunks else 0.0,
+        overall_similarity,
         all_matches,
     )
 
@@ -898,35 +983,35 @@ def _aggregate_parallel_results(
     total_sem = 0.0
     total_lex = 0.0
     total_fp = 0.0
-    total_overall = 0.0
+    total_weighted = 0.0
     matched_count = 0
 
     for result in results:
         all_matches.extend(result["matches"])
         if result["top"] is not None:
             top = result["top"]
-            total_sem += top["sem"]
-            total_lex += top["lex"]
+            sem = top["sem"]
+            lex = top["lex"]
+            total_sem += sem
+            total_lex += lex
             total_fp += top["fp"]
-            total_overall += top["combined"]
+            # Weighted contribution: severity-aware (exact=1.0, paraphrase=0.75, weak=0.45)
+            total_weighted += _contribution_weight(sem, lex)
             matched_count += 1
 
+    avg_sem = (total_sem / matched_count) if matched_count else 0.0
+    avg_lex = (total_lex / matched_count) if matched_count else 0.0
+    avg_fp  = (total_fp  / matched_count) if matched_count else 0.0
     match_rate = matched_count / n_query_chunks if n_query_chunks else 0.0
 
-    avg_sem  = (total_sem / matched_count) if matched_count else 0.0
-    avg_lex  = (total_lex / matched_count) if matched_count else 0.0
-    avg_fp   = (total_fp / matched_count) if matched_count else 0.0
-    avg_comb = (total_overall / matched_count) if matched_count else 0.0
-
-    sem_overall      = round(match_rate * avg_sem * 100, 2)
-    lex_overall      = round(match_rate * avg_lex * 100, 2)
-    fp_overall       = round(match_rate * avg_fp * 100, 2)
-    combined_overall = round(match_rate * avg_comb * 100, 2)
+    # Overall similarity = sum(severity weights) / total query chunks * 100
+    # Counts each query chunk ONCE (no inflation from multi-doc matches).
+    combined_overall = round((total_weighted / n_query_chunks) * 100, 2) if n_query_chunks else 0.0
 
     return (
-        sem_overall,
-        lex_overall,
-        fp_overall,
+        round(match_rate * avg_sem * 100, 2),
+        round(match_rate * avg_lex * 100, 2),
+        round(match_rate * avg_fp  * 100, 2),
         combined_overall,
         all_matches,
     )

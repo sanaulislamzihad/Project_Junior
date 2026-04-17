@@ -115,7 +115,13 @@ function MainApp() {
         // Only restore active/pending items from localStorage.
         // savedFromDb items are always reloaded fresh from the DB effect below.
         if (saved?.checkQueue) {
-          const activeOnly = saved.checkQueue.filter(i => !i.savedFromDb);
+          // Keep all non-pending non-savedFromDb items. The jobId is now preserved
+          // on completion, so the DB merge below can match and upgrade "[CACHED]"
+          // entries (both PDF and direct-text) to their full saved results.
+          // Pending items are dropped — File objects don't survive serialization.
+          const activeOnly = saved.checkQueue.filter(i =>
+            !i.savedFromDb && i.status !== 'pending'
+          );
           setCheckQueue(activeOnly);
         }
         // Do NOT restore viewingResultId — result data is stripped from
@@ -167,42 +173,52 @@ function MainApp() {
       const saved = res.data?.results || [];
       if (saved.length === 0) return;
       setCheckQueue(q => {
+        const dbByJobId = new Map(saved.map(j => [j.job_id, j]));
         const existingJobIds = new Set(q.map(i => i.jobId).filter(Boolean));
+
+        const makeDbItem = (j) => {
+          const fileName = j.result?.file_name || j.result?.filename || '';
+          const pathParts = fileName.split(/[/\\]/);
+          const hasFolder = pathParts.length > 1;
+          const folderName = hasFolder ? pathParts.slice(0, -1).join('/') : null;
+          const folderId = folderName ? `db-folder-${folderName}` : null;
+          return {
+            id: crypto.randomUUID(),
+            file: null,
+            directText: j.result?.direct_text ?? null,
+            status: 'completed',
+            jobId: j.job_id,
+            result: j.result,
+            error: null,
+            savedFromDb: true,
+            savedAt: j.created_at,
+            folderId,
+            folderName,
+          };
+        };
+
+        // Upgrade any localStorage "[CACHED]" items that now have a fresh DB copy,
+        // so the user can actually view their report after a refresh.
+        const upgraded = q.map(item => {
+          if (item.jobId && dbByJobId.has(item.jobId) && !item.savedFromDb) {
+            const j = dbByJobId.get(item.jobId);
+            return { ...item, result: j.result, savedFromDb: true, savedAt: j.created_at };
+          }
+          return item;
+        });
+
+        // Add DB items that weren't in localStorage at all
         const newItems = saved
           .filter(j => !existingJobIds.has(j.job_id))
-          .map(j => {
-            // Reconstruct folder grouping from file_name (e.g. "files/doc.pdf" → folder "files")
-            const fileName = j.result?.file_name || j.result?.filename || '';
-            const pathParts = fileName.split(/[/\\]/);
-            const hasFolder = pathParts.length > 1;
-            const folderName = hasFolder ? pathParts.slice(0, -1).join('/') : null;
-            const folderId = folderName ? `db-folder-${folderName}` : null;
+          .map(makeDbItem);
 
-            return {
-              id: crypto.randomUUID(),
-              file: null,
-              directText: j.result?.direct_text ?? null,
-              status: 'completed',
-              jobId: j.job_id,
-              result: j.result,
-              error: null,
-              savedFromDb: true,
-              savedAt: j.created_at,
-              folderId,
-              folderName,
-            };
-          });
+        if (newItems.length === 0 && upgraded === q) return q;
 
-        if (newItems.length === 0) return q;
-
-        // Merge: keep existing active/pending items, append DB items after them
-        // Sort DB items oldest-first so queue reads top-to-bottom in submission order
         const sorted = [...newItems].sort(
           (a, b) => new Date(a.savedAt || 0) - new Date(b.savedAt || 0)
         );
-        // Active (non-saved) items stay at top; DB-saved items go below
-        const active = q.filter(i => !i.savedFromDb);
-        const existingDb = q.filter(i => i.savedFromDb);
+        const active = upgraded.filter(i => !i.savedFromDb);
+        const existingDb = upgraded.filter(i => i.savedFromDb);
         return [...active, ...sorted, ...existingDb];
       });
     }).catch(() => {});
@@ -321,7 +337,9 @@ function MainApp() {
   };
 
   const handleItemComplete = (id, result) => {
-    setCheckQueue(q => q.map(item => item.id === id ? { ...item, status: 'completed', result, jobId: null } : item));
+    // Keep jobId after completion so localStorage deduplication works on the
+    // next page load — nulling it caused N-PDF → N-duplicate-item bug on refresh.
+    setCheckQueue(q => q.map(item => item.id === id ? { ...item, status: 'completed', result } : item));
     setCheckQueue(q => {
       const completedItem = q.find(item => item.id === id);
       if (completedItem?.isRepoUpload) {
@@ -574,6 +592,23 @@ function MainApp() {
               </div>
             </div>
           )}
+
+          {/* Background SSE pollers — always mounted so the queue keeps processing
+              even when the user navigates away from the Processing Queue tab.
+              handleItemComplete is a functional-state update so calling it from
+              both this hidden instance and the visible queue instance is safe. */}
+          <div style={{ display: 'none' }}>
+            {checkQueue
+              .filter(i => i.status === 'analyzing' && i.jobId)
+              .map(i => (
+                <AnalyzingProgress
+                  key={`bg-${i.id}`}
+                  jobId={i.jobId}
+                  onComplete={(result) => handleItemComplete(i.id, result)}
+                  title="" subtitle="" hideTitle
+                />
+              ))}
+          </div>
 
           {/* Render Active View Result from Queue instead of original content if chosen */}
           {!restoring && viewingResultId && (() => {

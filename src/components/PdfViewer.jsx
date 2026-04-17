@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useCallback, useEffect } from 'react';
+import React, { useMemo, useState, useCallback, useEffect, useRef } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import 'react-pdf/dist/Page/AnnotationLayer.css';
 import 'react-pdf/dist/Page/TextLayer.css';
@@ -27,6 +27,7 @@ const PdfViewer = ({ file, showTextLayer = false, interactiveHighlights = [], on
     const [isLoading, setIsLoading] = useState(true);
     const [loadError, setLoadError] = useState(null);
     const [pageSize, setPageSize] = useState(null);
+    const loadTimerRef = useRef(null);
 
     // Reset loading state when the source file changes
     useEffect(() => {
@@ -35,22 +36,34 @@ const PdfViewer = ({ file, showTextLayer = false, interactiveHighlights = [], on
         setNumPages(null);
         setPageNumber(1);
 
-        // Fallback: if neither onLoadSuccess nor onLoadError fires within 15s,
-        // show an error instead of spinning forever (e.g. worker init failure)
-        const timer = setTimeout(() => {
+        // Fallback timer — cancelled immediately if onLoadSuccess or onLoadError
+        // fires first (prevents the timer from overwriting a successfully loaded PDF)
+        if (loadTimerRef.current) clearTimeout(loadTimerRef.current);
+        loadTimerRef.current = setTimeout(() => {
             setIsLoading(false);
             setLoadError('PDF could not be loaded. Try downloading the report instead.');
-        }, 15000);
-        return () => clearTimeout(timer);
+        }, 60000);
+
+        return () => {
+            if (loadTimerRef.current) clearTimeout(loadTimerRef.current);
+        };
     }, [file]);
 
     const onDocumentLoadSuccess = useCallback(({ numPages }) => {
+        if (loadTimerRef.current) {
+            clearTimeout(loadTimerRef.current);
+            loadTimerRef.current = null;
+        }
         setNumPages(numPages);
         setIsLoading(false);
         setLoadError(null);
     }, []);
 
     const onDocumentLoadError = useCallback((error) => {
+        if (loadTimerRef.current) {
+            clearTimeout(loadTimerRef.current);
+            loadTimerRef.current = null;
+        }
         console.error('PDF load error:', error);
         setLoadError(`Failed to load PDF: ${error.message || 'Unknown error'}`);
         setIsLoading(false);
