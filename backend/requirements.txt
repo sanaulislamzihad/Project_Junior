@@ -10,12 +10,8 @@ PyPDF2
 python-pptx
 sentence-transformers
 faiss-cpu
-<<<<<<< Updated upstream
-
-=======
 torch
 torchvision
->>>>>>> Stashed changes
 numpy
 nltk
 reportlab

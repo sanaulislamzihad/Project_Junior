@@ -59,58 +59,8 @@ if errorlevel 1 (
 )
 
 REM =====================================================
-REM  TORCH INSTALL (GPU if available, else CPU)
+REM  GPU DETECTION + AUTO INSTALL CUDA PYTORCH
 REM =====================================================
-<<<<<<< Updated upstream
-
-REM Check if torch is already installed
-python -c "import torch" >nul 2>&1
-if not errorlevel 1 goto torch_done
-
-echo  [+] Checking for NVIDIA GPU...
-set HAS_GPU=0
-nvidia-smi >nul 2>&1
-if not errorlevel 1 set HAS_GPU=1
-
-if "!HAS_GPU!"=="1" (
-    echo  [+] NVIDIA GPU found! Installing GPU version of PyTorch...
-    echo      (This requires internet - one time only)
-    echo.
-
-    REM Detect CUDA major version
-    set CUDA_VER=12
-    for /f "tokens=9" %%v in ('nvidia-smi ^| findstr /i "CUDA Version"') do (
-        set CUDA_FULL=%%v
-        set CUDA_VER=!CUDA_FULL:~0,2!
-    )
-    if "!CUDA_VER:~1,1!"=="." set CUDA_VER=!CUDA_VER:~0,1!
-    echo  [+] Detected CUDA version: !CUDA_VER!
-
-    if "!CUDA_VER!"=="11" (
-        pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118 -q
-    ) else if "!CUDA_VER!"=="12" (
-        pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 -q
-    ) else (
-        REM CUDA 13+ drivers support cu126 wheels (backward compatible)
-        pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126 -q
-        if errorlevel 1 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124 -q
-    )
-
-    python -c "import torch; exit(0 if torch.cuda.is_available() else 1)" >nul 2>&1
-    if errorlevel 1 (
-        echo  [!] GPU PyTorch failed. Installing CPU version instead...
-        pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu -q
-    ) else (
-        REM GPU confirmed — upgrade faiss-cpu to faiss-gpu for faster search
-        pip install faiss-gpu -q >nul 2>&1
-        for /f "tokens=1,* delims=," %%a in ('nvidia-smi --query-gpu^=name^,memory.total --format^=csv^,noheader 2^>nul') do echo  [GPU] %%a ^| VRAM: %%b
-        echo  [+] Running in GPU MODE - FAST!
-    )
-) else (
-    echo  [+] No GPU found. Installing CPU version of PyTorch...
-    pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu -q
-    echo  [+] Running on CPU.
-=======
 echo  [+] Checking for GPU...
 nvidia-smi >nul 2>&1
 if errorlevel 1 goto :NO_GPU
@@ -152,7 +102,6 @@ if errorlevel 1 (
     )
 ) else (
     echo  [+] GPU already configured.
->>>>>>> Stashed changes
 )
 
 REM Show GPU info
@@ -167,9 +116,7 @@ echo  [-] No NVIDIA GPU found. Running on CPU.
 
 :GPU_DONE
 echo.
-
-:torch_done
-REM =====================================================
+REM ===========================================================
 
 REM ---- Install Node packages if not installed ----
 if not exist "node_modules\vite" (
