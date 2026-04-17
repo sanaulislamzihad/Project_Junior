@@ -71,6 +71,10 @@ def init_db(db_path: str = DB_PATH) -> None:
             FOREIGN KEY (document_id) REFERENCES documents(document_id)
         )
     """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON document_chunks(document_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_embeddings_doc_id ON document_chunk_embeddings(document_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_embeddings_doc_chunk ON document_chunk_embeddings(document_id, chunk_index)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_documents_repo_model ON documents(repo_type, model_name)")
     conn.commit()
     conn.close()
 

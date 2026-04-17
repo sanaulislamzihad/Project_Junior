@@ -93,7 +93,7 @@ def _is_model_cached(model_id: str) -> bool:
 
 
 def _get_model(model_name: str = DEFAULT_MODEL_NAME):
-    """Load and cache a SentenceTransformer model.
+    """Load the requested model, unloading any other model first (one model in memory at a time).
     - If already cached on disk: loads with local_files_only=True (no network call).
     - If not cached: downloads from HuggingFace (requires internet on first use).
     """
@@ -107,6 +107,12 @@ def _get_model(model_name: str = DEFAULT_MODEL_NAME):
         if model_name in _MODEL_CACHE:
             return _MODEL_CACHE[model_name]
 
+        # Unload any other model from memory before loading the new one
+        for other in list(_MODEL_CACHE.keys()):
+            if other != model_name:
+                logger.info("Unloading model '%s' to free memory.", other)
+                del _MODEL_CACHE[other]
+
         from sentence_transformers import SentenceTransformer
         os.makedirs(MODEL_CACHE_DIR, exist_ok=True)
         model_id = AVAILABLE_MODELS[model_name]["model_id"]
@@ -114,7 +120,6 @@ def _get_model(model_name: str = DEFAULT_MODEL_NAME):
 
         try:
             if cached:
-                # Already on disk — load fully offline, no network call needed.
                 model = SentenceTransformer(
                     model_id,
                     cache_folder=MODEL_CACHE_DIR,
@@ -122,7 +127,6 @@ def _get_model(model_name: str = DEFAULT_MODEL_NAME):
                     local_files_only=True,
                 )
             else:
-                # Not cached — download from HuggingFace (first use only).
                 logger.info("Model '%s' not cached. Downloading from HuggingFace...", model_id)
                 model = SentenceTransformer(
                     model_id,
@@ -276,6 +280,49 @@ def _extract_common_portions(text_a: str, text_b: str, min_chars: int = 18, top_
     return portions
 
 
+def _sentence_level_matches_precomputed(
+    q_sentences: List[str],
+    m_sentences: List[str],
+    q_emb: np.ndarray,
+    m_emb: np.ndarray,
+    min_semantic: float,
+    min_lexical: float,
+    min_fingerprint: float = 0.08,
+    model_name: str = DEFAULT_MODEL_NAME,
+) -> List[dict]:
+    # Same logic as _sentence_level_matches but uses pre-computed embeddings.
+    if len(q_emb) == 0 or len(m_emb) == 0:
+        return []
+    matches = []
+    for i, q_vec in enumerate(q_emb):
+        best = None
+        for j, m_vec in enumerate(m_emb):
+            sem = cosine_similarity(q_vec, m_vec)
+            lex = lexical_similarity(q_sentences[i].lower(), m_sentences[j].lower())
+            fp = fingerprint_similarity(q_sentences[i].lower(), m_sentences[j].lower())
+            if not (sem >= min_semantic or lex >= min_lexical):
+                continue
+            hard_floor = _get_thresholds(model_name)["sem_hard_floor"]
+            if sem < hard_floor:
+                continue
+            score = (0.65 * sem) + (0.15 * lex) + (0.10 * fp) + (0.10 * winnowing_similarity(q_sentences[i].lower(), m_sentences[j].lower()))
+            if best is None or score > best["score"]:
+                best = {
+                    "query_sentence": q_sentences[i],
+                    "matched_sentence": m_sentences[j],
+                    "semantic_similarity": round(float(sem), 4),
+                    "lexical_similarity": round(float(lex), 4),
+                    "fingerprint_similarity": round(float(fp), 4),
+                    "score": score,
+                }
+        if best is not None:
+            matches.append(best)
+    matches.sort(key=lambda x: x["score"], reverse=True)
+    for item in matches:
+        item.pop("score", None)
+    return matches
+
+
 def _sentence_level_matches(
     query_text: str,
     matched_text: str,
@@ -290,8 +337,9 @@ def _sentence_level_matches(
     if not q_sentences or not m_sentences:
         return []
 
-    q_emb = encode_chunks(q_sentences, model_name=model_name)
-    m_emb = encode_chunks(m_sentences, model_name=model_name)
+    all_emb = encode_chunks(q_sentences + m_sentences, model_name=model_name)
+    q_emb = all_emb[:len(q_sentences)]
+    m_emb = all_emb[len(q_sentences):]
     if len(q_emb) == 0 or len(m_emb) == 0:
         return []
 
@@ -431,7 +479,7 @@ DEFAULT_EMBEDDING_DIM = 768
 
 def get_embedding_dim(model_name: str = DEFAULT_MODEL_NAME) -> int:
     """Return the embedding dimension of the specified model."""
-    return _get_model(model_name).get_sentence_embedding_dimension()
+    return _get_model(model_name).get_embedding_dimension()
 
 
 def encode_chunks(chunks: List[str], model_name: str = DEFAULT_MODEL_NAME) -> np.ndarray:
@@ -562,6 +610,101 @@ def _match_query_chunk_bruteforce(
     return {"matches": matches, "top": top if any_built else None}
 
 
+def _collect_candidates_bruteforce(
+    qi: int,
+    q_emb: np.ndarray,
+    q_text: str,
+    repo_chunks: List[dict],
+    threshold: float,
+    min_lexical: float,
+    min_fingerprint: float,
+    model_name: str = DEFAULT_MODEL_NAME,
+) -> dict:
+    """Like _match_query_chunk_bruteforce but returns raw candidates without sentence encoding."""
+    q_lower = q_text.lower()
+    lex_bypass_min = _get_thresholds(model_name)["lex_bypass"]
+    matches_per_doc: dict = {}
+    for rc in repo_chunks:
+        if "embedding" not in rc or rc["embedding"] is None:
+            continue
+        doc_id = rc["document_id"]
+        matched_text = rc.get("chunk_text") or ""
+        sem = cosine_similarity(q_emb, np.frombuffer(rc["embedding"], dtype=np.float32))
+        lex = lexical_similarity(q_lower, matched_text.lower())
+        fp = fingerprint_similarity(q_lower, matched_text.lower())
+        winnow = winnowing_similarity(q_lower, matched_text.lower())
+        combined = (0.60 * sem) + (0.15 * lex) + (0.15 * winnow) + (0.10 * fp)
+        if (sem >= threshold and lex >= min_lexical and fp >= min_fingerprint) or (lex >= lex_bypass_min):
+            matches_per_doc.setdefault(doc_id, []).append(
+                {"combined": combined, "sem": sem, "lex": lex, "fp": fp, "rc": rc, "matched_text": matched_text}
+            )
+    if not matches_per_doc:
+        return {"candidates": [], "top": None}
+    all_entries = [e for bucket in matches_per_doc.values() for e in bucket]
+    top = max(all_entries, key=lambda x: x["combined"])
+    candidates = []
+    for doc_id, bucket in matches_per_doc.items():
+        for raw in bucket:
+            rc = raw["rc"]
+            candidates.append({
+                "qi": qi, "q_text": q_text,
+                "doc_id": rc["document_id"],
+                "file_name": rc.get("file_name", rc["document_id"]),
+                "chunk_index": rc["chunk_index"],
+                "matched_text": raw["matched_text"],
+                "sem": raw["sem"], "lex": raw["lex"], "fp": raw["fp"],
+            })
+    return {"candidates": candidates, "top": top}
+
+
+def _collect_candidates_faiss(
+    qi: int,
+    q_text: str,
+    faiss_row: list,
+    threshold: float,
+    min_lexical: float,
+    min_fingerprint: float,
+    model_name: str = DEFAULT_MODEL_NAME,
+) -> dict:
+    """Like _match_query_chunk_faiss but returns raw candidates without sentence encoding."""
+    if not faiss_row:
+        return {"candidates": [], "top": None}
+    q_lower = q_text.lower()
+    lex_bypass_min = _get_thresholds(model_name)["lex_bypass"]
+    matches_per_doc: dict = {}
+    for chunk_info, sem_score in faiss_row:
+        sem_val = float(sem_score)
+        doc_id = chunk_info["document_id"]
+        matched_text = chunk_info.get("chunk_text") or ""
+        lex_val = lexical_similarity(q_lower, matched_text.lower())
+        fp_val = fingerprint_similarity(q_lower, matched_text.lower())
+        if not ((sem_val >= threshold and lex_val >= min_lexical and fp_val >= min_fingerprint) or (lex_val >= lex_bypass_min)):
+            continue
+        winnow_val = winnowing_similarity(q_lower, matched_text.lower())
+        combined = (0.60 * sem_val) + (0.15 * lex_val) + (0.15 * winnow_val) + (0.10 * fp_val)
+        matches_per_doc.setdefault(doc_id, []).append(
+            {"combined": combined, "chunk_info": chunk_info, "matched_text": matched_text,
+             "sem": sem_val, "lex": lex_val, "fp": fp_val}
+        )
+    if not matches_per_doc:
+        return {"candidates": [], "top": None}
+    all_entries = [e for bucket in matches_per_doc.values() for e in bucket]
+    top = max(all_entries, key=lambda x: x["combined"])
+    candidates = []
+    for doc_id, bucket in matches_per_doc.items():
+        for raw in bucket:
+            ci = raw["chunk_info"]
+            candidates.append({
+                "qi": qi, "q_text": q_text,
+                "doc_id": ci["document_id"],
+                "file_name": ci.get("file_name", ci["document_id"]),
+                "chunk_index": ci["chunk_index"],
+                "matched_text": raw["matched_text"],
+                "sem": raw["sem"], "lex": raw["lex"], "fp": raw["fp"],
+            })
+    return {"candidates": candidates, "top": top}
+
+
 def _match_query_chunk_faiss(
     qi: int,
     q_text: str,
@@ -619,6 +762,131 @@ def _match_query_chunk_faiss(
                 matches.append(rec)
                 any_built = True
     return {"matches": matches, "top": top if any_built else None}
+
+
+def _batch_sentence_match(
+    all_candidates: List[dict],
+    top_per_qi: dict,
+    n_query_chunks: int,
+    model_name: str,
+    thr_cfg: dict,
+) -> tuple:
+    """Phase 2: batch encode all candidate sentences once, then build match records."""
+    if not all_candidates:
+        return 0.0, 0.0, 0.0, 0.0, []
+
+    # Split sentences for every candidate
+    per_cand_q: List[List[str]] = []
+    per_cand_m: List[List[str]] = []
+    q_offsets: List[int] = []
+    m_offsets: List[int] = []
+    all_q_sents: List[str] = []
+    all_m_sents: List[str] = []
+
+    for cand in all_candidates:
+        q_sents = _split_sentences(cand["q_text"])
+        m_sents = _split_sentences(cand["matched_text"])
+        q_offsets.append(len(all_q_sents))
+        m_offsets.append(len(all_m_sents))
+        per_cand_q.append(q_sents)
+        per_cand_m.append(m_sents)
+        all_q_sents.extend(q_sents)
+        all_m_sents.extend(m_sents)
+
+    # ONE batch encode call for all sentences
+    t_enc = time.perf_counter()
+    all_sents = all_q_sents + all_m_sents
+    if all_sents:
+        all_embs = encode_chunks(all_sents, model_name=model_name)
+        q_all_embs = all_embs[:len(all_q_sents)]
+        m_all_embs = all_embs[len(all_q_sents):]
+    else:
+        q_all_embs = np.array([]).reshape(0, 0)
+        m_all_embs = np.array([]).reshape(0, 0)
+    logger.info("find_matches: batch sentence encoding %.3fs (%d sentences)", time.perf_counter() - t_enc, len(all_sents))
+
+    # Build match records using pre-computed embeddings
+    paraphrase_floor = max(0.72, thr_cfg["semantic_threshold"] + 0.02)
+    all_matches = []
+    built_qi: set = set()
+
+    for idx, cand in enumerate(all_candidates):
+        q_sents = per_cand_q[idx]
+        m_sents = per_cand_m[idx]
+        q_start = q_offsets[idx]
+        m_start = m_offsets[idx]
+        q_emb = q_all_embs[q_start:q_start + len(q_sents)] if q_sents else np.array([]).reshape(0, 0)
+        m_emb = m_all_embs[m_start:m_start + len(m_sents)] if m_sents else np.array([]).reshape(0, 0)
+
+        sentence_matches = _sentence_level_matches_precomputed(
+            q_sents, m_sents, q_emb, m_emb,
+            min_semantic=thr_cfg["sentence_semantic"],
+            min_lexical=thr_cfg["sentence_lexical"],
+            min_fingerprint=thr_cfg["min_fingerprint"],
+            model_name=model_name,
+        )
+        common_portions = _extract_common_portions(cand["q_text"], cand["matched_text"])
+
+        if not sentence_matches and not common_portions:
+            if cand["sem"] < paraphrase_floor:
+                continue
+            sentence_matches = [{
+                "query_sentence": cand["q_text"][:300].strip(),
+                "matched_sentence": cand["matched_text"][:300].strip(),
+                "semantic_similarity": round(float(cand["sem"]), 4),
+                "lexical_similarity": round(float(cand["lex"]), 4),
+                "fingerprint_similarity": round(float(cand["fp"]), 4),
+            }]
+
+        winnow = winnowing_similarity(cand["q_text"], cand["matched_text"])
+        combined = (0.60 * cand["sem"]) + (0.15 * cand["lex"]) + (0.15 * winnow) + (0.10 * cand["fp"])
+        all_matches.append({
+            "query_chunk_index": cand["qi"],
+            "query_text_preview": cand["q_text"][:200] + ("..." if len(cand["q_text"]) > 200 else ""),
+            "matched_document_id": cand["doc_id"],
+            "file_name": cand["file_name"],
+            "matched_chunk_index": cand["chunk_index"],
+            "matched_text_preview": cand["matched_text"][:200] + ("..." if len(cand["matched_text"]) > 200 else ""),
+            "semantic_similarity": round(float(cand["sem"]), 4),
+            "lexical_similarity": round(float(cand["lex"]), 4),
+            "fingerprint_similarity": round(float(cand["fp"]), 4),
+            "winnowing_similarity": round(float(winnow), 4),
+            "combined_similarity": round(float(combined), 4),
+            "similar_sentences": sentence_matches,
+            "common_portions": common_portions,
+        })
+        built_qi.add(cand["qi"])
+
+    # Compute overall scores using top_per_qi
+    total_sem = total_lex = total_fp = total_overall = 0.0
+    matched_count = len(top_per_qi)
+    for top in top_per_qi.values():
+        sem = top["sem"] if isinstance(top, dict) else float(top)
+        lex = top.get("lex", 0.0) if isinstance(top, dict) else 0.0
+        fp = top.get("fp", 0.0) if isinstance(top, dict) else 0.0
+        winnow = winnowing_similarity(top.get("matched_text", ""), top.get("matched_text", "")) if isinstance(top, dict) else 0.0
+        combined = (0.60 * sem) + (0.15 * lex) + (0.15 * winnow) + (0.10 * fp)
+        total_sem += sem
+        total_lex += lex
+        total_fp += fp
+        total_overall += combined
+
+    if matched_count:
+        match_rate = matched_count / n_query_chunks
+        avg_sem = total_sem / matched_count
+        avg_lex = total_lex / matched_count
+        avg_fp = total_fp / matched_count
+        avg_comb = total_overall / matched_count
+    else:
+        match_rate = avg_sem = avg_lex = avg_fp = avg_comb = 0.0
+
+    return (
+        round(match_rate * avg_sem * 100, 2),
+        round(match_rate * avg_lex * 100, 2),
+        round(match_rate * avg_fp * 100, 2),
+        round(match_rate * avg_comb * 100, 2),
+        all_matches,
+    )
 
 
 def _aggregate_parallel_results(
@@ -724,34 +992,33 @@ def find_matches(
 
             faiss_results = search_faiss(index, chunk_infos, query_embeddings, k=DEFAULT_TOP_K)
 
+            # Phase 1: collect candidates in parallel (no sentence encoding)
             t_par = time.perf_counter()
-            results: List[dict] = []
+            all_candidates: List[dict] = []
+            top_per_qi: dict = {}
             with ThreadPoolExecutor(max_workers=n_workers) as pool:
                 futures = {
                     pool.submit(
-                        _match_query_chunk_faiss, qi, query_chunks[qi],
+                        _collect_candidates_faiss, qi, query_chunks[qi],
                         faiss_results[qi], threshold, min_lexical, min_fingerprint, model_name,
                     ): qi
                     for qi in range(len(query_chunks))
                 }
                 for future in as_completed(futures):
                     try:
-                        results.append(future.result())
+                        res = future.result()
+                        all_candidates.extend(res["candidates"])
+                        if res["top"] is not None:
+                            qi = futures[future]
+                            top_per_qi[qi] = res["top"]
                     except Exception:
-                        logger.warning(
-                            "find_matches: chunk %d failed, skipping",
-                            futures[future], exc_info=True,
-                        )
+                        logger.warning("find_matches: chunk %d failed", futures[future], exc_info=True)
 
-            logger.info(
-                "find_matches[faiss]: parallel matching %.3fs (%d workers)",
-                time.perf_counter() - t_par, n_workers,
-            )
-            final = _aggregate_parallel_results(results, len(query_chunks))
-            logger.info(
-                "find_matches: completed in %.3fs — %d matches",
-                time.perf_counter() - t_start, len(final[4]),
-            )
+            logger.info("find_matches[faiss]: candidate collection %.3fs (%d candidates)", time.perf_counter() - t_par, len(all_candidates))
+
+            # Phase 2: batch encode all sentences at once, then build match records
+            final = _batch_sentence_match(all_candidates, top_per_qi, len(query_chunks), model_name, thr_cfg)
+            logger.info("find_matches: completed in %.3fs — %d matches", time.perf_counter() - t_start, len(final[4]))
             return final
 
     # Brute-force path: parallel comparison of each query chunk against every repo chunk.
@@ -759,32 +1026,31 @@ def find_matches(
     query_embeddings = encode_chunks(query_chunks, model_name=model_name)
     logger.info("find_matches: query encoding %.3fs", time.perf_counter() - t_enc)
 
+    # Phase 1: collect candidates in parallel (no sentence encoding)
     t_par = time.perf_counter()
-    results: List[dict] = []
+    all_candidates: List[dict] = []
+    top_per_qi: dict = {}
     with ThreadPoolExecutor(max_workers=n_workers) as pool:
         futures = {
             pool.submit(
-                _match_query_chunk_bruteforce, qi, query_embeddings[qi],
+                _collect_candidates_bruteforce, qi, query_embeddings[qi],
                 query_chunks[qi], repo_chunks, threshold, min_lexical, min_fingerprint, model_name,
             ): qi
             for qi in range(len(query_chunks))
         }
         for future in as_completed(futures):
             try:
-                results.append(future.result())
+                res = future.result()
+                all_candidates.extend(res["candidates"])
+                if res["top"] is not None:
+                    qi = futures[future]
+                    top_per_qi[qi] = res["top"]
             except Exception:
-                logger.warning(
-                    "find_matches: chunk %d failed, skipping",
-                    futures[future], exc_info=True,
-                )
+                logger.warning("find_matches: chunk %d failed", futures[future], exc_info=True)
 
-    logger.info(
-        "find_matches[brute-force]: parallel matching %.3fs (%d workers)",
-        time.perf_counter() - t_par, n_workers,
-    )
-    final = _aggregate_parallel_results(results, len(query_chunks))
-    logger.info(
-        "find_matches: completed in %.3fs — %d matches",
-        time.perf_counter() - t_start, len(final[4]),
-    )
+    logger.info("find_matches[brute-force]: candidate collection %.3fs (%d candidates)", time.perf_counter() - t_par, len(all_candidates))
+
+    # Phase 2: batch encode all sentences at once, then build match records
+    final = _batch_sentence_match(all_candidates, top_per_qi, len(query_chunks), model_name, thr_cfg)
+    logger.info("find_matches: completed in %.3fs — %d matches", time.perf_counter() - t_start, len(final[4]))
     return final

@@ -62,6 +62,10 @@ const AdminDashboard = () => {
         setPastDocsRefresh(n => n + 1);
     };
 
+    const handleItemError = (id, errMsg) => {
+        setAdminQueue(q => q.map(item => item.id === id ? { ...item, status: 'error', jobId: null, error: errMsg } : item));
+    };
+
     useEffect(() => {
         if (adminQueue.length === 0) return;
         
@@ -586,7 +590,7 @@ const AdminDashboard = () => {
                                             )}
                                             {item.status === 'analyzing' && item.jobId && (
                                               <div className="mt-2 max-w-sm">
-                                                <AnalyzingProgress jobId={item.jobId} onComplete={(result) => handleItemComplete(item.id, result)} title="" subtitle="" hideTitle />
+                                                <AnalyzingProgress jobId={item.jobId} onComplete={(result) => handleItemComplete(item.id, result)} onError={(err) => handleItemError(item.id, err)} title="" subtitle="" hideTitle />
                                               </div>
                                             )}
                                         </div>
@@ -596,10 +600,11 @@ const AdminDashboard = () => {
                                                     <CheckCircle className="w-4 h-4" /> Added
                                                 </div>
                                             )}
-                                            {item.status === 'pending' && (
-                                                <button 
+                                            {(item.status === 'pending' || item.status === 'error') && (
+                                                <button
                                                     onClick={() => setAdminQueue(prev => prev.filter(i => i.id !== item.id))}
                                                     className="p-3 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all"
+                                                    title="Remove from queue"
                                                 >
                                                     <LogOut className="w-5 h-5 rotate-180" />
                                                 </button>

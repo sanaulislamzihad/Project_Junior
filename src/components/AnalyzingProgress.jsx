@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { motion } from 'framer-motion';
 import axios from 'axios';
 
-const AnalyzingProgress = ({ jobId, onComplete, title = "Analyzing Document...", subtitle = "Checking for AI & Plagiarism matches", hideTitle = false, compact = false }) => {
+const AnalyzingProgress = ({ jobId, onComplete, onError, title = "Analyzing Document...", subtitle = "Checking for AI & Plagiarism matches", hideTitle = false, compact = false }) => {
     const [progress, setProgress] = useState(0);
     const [stage, setStage] = useState("Starting\u2026");
     const [error, setError] = useState(null);
@@ -45,6 +45,7 @@ const AnalyzingProgress = ({ jobId, onComplete, title = "Analyzing Document...",
                 if (data.error) {
                     setError(data.error);
                     es.close();
+                    if (onError) onError(data.error);
                     return;
                 }
 
@@ -71,8 +72,10 @@ const AnalyzingProgress = ({ jobId, onComplete, title = "Analyzing Document...",
                 try {
                     const data = JSON.parse(event.data);
                     serverErrorHandled = true;
-                    setError(data.error || "An error occurred during analysis.");
+                    const errMsg = data.error || "An error occurred during analysis.";
+                    setError(errMsg);
                     es.close();
+                    if (onError) onError(errMsg);
                 } catch {}
             }
         });
@@ -82,7 +85,9 @@ const AnalyzingProgress = ({ jobId, onComplete, title = "Analyzing Document...",
             es.close();
             fetchResultFallback().then((ok) => {
                 if (!ok) {
-                    setError("Lost connection to the analysis stream. Please try again.");
+                    const errMsg = "Lost connection to the analysis stream. Please try again.";
+                    setError(errMsg);
+                    if (onError) onError(errMsg);
                 }
             });
         };

@@ -25,7 +25,7 @@ from text_pipeline import (
     light_clean_preserve_newlines,
 )
 from document_store import save_document, list_documents, delete_document, update_document_path, get_stats, get_chunks_for_scan, get_chunks_with_embeddings, DB_PATH, filename_exists
-from embedding_pipeline import encode_chunks, find_matches, extract_top_similar_sentences, AVAILABLE_MODELS, DEFAULT_MODEL_NAME
+from embedding_pipeline import encode_chunks, find_matches, extract_top_similar_sentences, AVAILABLE_MODELS, DEFAULT_MODEL_NAME, _get_model
 from faiss_index import invalidate_cached_index
 from diff_checker import compute_comparison
 from pdf_highlight_pipeline import highlight_pdf_matches
@@ -1051,8 +1051,8 @@ async def generate_comparison_report_endpoint(request: Request):
 
 
 @app.on_event("startup")
-def _startup_cleanup():
-    """Remove artifacts older than 1 hour on startup."""
+async def _startup_cleanup():
+    """Remove artifacts older than 1 hour on startup, then preload embedding models."""
     cutoff = time.time() - 3600
     if os.path.isdir(ARTIFACTS_DIR):
         for name in os.listdir(ARTIFACTS_DIR):
@@ -1062,6 +1062,7 @@ def _startup_cleanup():
                     os.unlink(path)
             except OSError:
                 pass
+    await asyncio.to_thread(_get_model, DEFAULT_MODEL_NAME)
 
 
 # ==================== SERVE REACT FRONTEND ====================
