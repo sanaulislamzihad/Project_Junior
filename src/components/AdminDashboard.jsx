@@ -888,7 +888,7 @@ const AdminDashboard = () => {
                             </div>
                             <div className="lg:col-span-2">
                                 <motion.div initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.2 }} className="w-full">
-                                    <PastDocuments user={user} refreshKey={pastDocsRefresh} adminRepoMode={true} />
+                                    <PastDocuments user={user} refreshKey={pastDocsRefresh} adminRepoMode={true} onAddToFolder={handleUniversityUpload} />
                                 </motion.div>
                             </div>
                         </div>

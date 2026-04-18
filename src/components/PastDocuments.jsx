@@ -17,7 +17,7 @@ const formatDate = (iso) => {
 const FileNode = ({
     node, level = 0, viewing, setViewing, deleting, handleDelete, handleDeleteFolder,
     selectedDocs, toggleDocSelection, toggleFolderSelection, isFolderSelected, isFolderPartiallySelected,
-    onAddToFolder
+    onAddToFolder, hoverless = false
 }) => {
     const [isOpen, setIsOpen] = useState(false);
     const fileInputRef = useRef(null);
@@ -43,22 +43,32 @@ const FileNode = ({
         const isSelected = selectedDocs.includes(doc.document_id);
         
         return (
-            <div className={`flex items-center gap-3 px-4 py-3 hover:bg-brand-50/30 border-b border-slate-50 group transition-colors ${isSelected ? 'bg-brand-50/50' : ''}`} style={{ paddingLeft: `${Math.max(1, (level) * 1.5)}rem` }}>
-                <div 
+            <div className={`flex items-center gap-3 px-4 py-3 border-b border-slate-50 group transition-colors ${hoverless ? '' : 'hover:bg-brand-50/30'} ${isSelected ? 'bg-brand-50/50' : ''}`} style={{ paddingLeft: `${Math.max(1, (level) * 1.5)}rem` }}>
+                <div
                     onClick={() => toggleDocSelection(doc.document_id)}
-                    className={`w-4 h-4 rounded border flex items-center justify-center cursor-pointer transition-colors shrink-0 ${isSelected ? 'bg-brand-500 border-brand-500' : 'bg-white border-slate-300 group-hover:border-brand-400'}`}
+                    className={`w-4 h-4 rounded border flex items-center justify-center cursor-pointer transition-colors shrink-0 ${isSelected ? 'bg-brand-500 border-brand-500' : `bg-white border-slate-300 ${hoverless ? '' : 'group-hover:border-brand-400'}`}`}
                 >
                     {isSelected && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
                 </div>
                 
                 <FileText className={`w-5 h-5 shrink-0 ${isSelected ? 'text-brand-500' : 'text-slate-400'}`} />
                 <div className="flex-1 min-w-0">
-                    <p className={`font-medium truncate ${isSelected ? 'text-brand-900' : 'text-slate-800'}`}>{node.name}</p>
+                    <div className="flex items-center gap-2 min-w-0">
+                        <p className={`font-medium truncate ${isSelected ? 'text-brand-900' : 'text-slate-800'}`}>{node.name}</p>
+                        {doc.model_name && (
+                            <span
+                                className={`shrink-0 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide border ${doc.model_name === 'paraphrase' ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-blue-50 text-blue-700 border-blue-200'}`}
+                                title={`Indexed with ${doc.model_name} model`}
+                            >
+                                {doc.model_name === 'paraphrase' ? 'Paraphrase' : 'General'}
+                            </span>
+                        )}
+                    </div>
                     <p className="text-xs text-slate-500">
                         {doc.num_chunks} chunks · {doc.num_pages_or_slides} pages · {formatDate(doc.indexed_at)}
                     </p>
                 </div>
-                <div className="flex gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                <div className={`flex gap-1 shrink-0 transition-opacity ${hoverless ? '' : 'opacity-0 group-hover:opacity-100'}`}>
                     <button
                         type="button"
                         onClick={() => setViewing(viewing?.document_id === doc.document_id ? null : doc)}
@@ -88,18 +98,29 @@ const FileNode = ({
     const fullySelected = isFolderSelected(node);
     const partiallySelected = isFolderPartiallySelected(node);
 
+    const collectModels = (n, set) => {
+        if (!n.isFolder) {
+            set.add(n.doc?.model_name || 'default');
+        } else {
+            (n.childrenArray || []).forEach(c => collectModels(c, set));
+        }
+    };
+    const folderModels = new Set();
+    collectModels(node, folderModels);
+    const folderModel = folderModels.size === 1 ? [...folderModels][0] : (folderModels.size > 1 ? 'mixed' : null);
+
     return (
         <div>
             {level > 0 && (
                 <div
-                    className="w-full flex items-center justify-between px-4 py-3 hover:bg-slate-100/50 border-b border-slate-200/50 transition-colors group cursor-pointer"
+                    className={`w-full flex items-center justify-between px-4 py-3 border-b border-slate-200/50 transition-colors group cursor-pointer ${hoverless ? '' : 'hover:bg-slate-100/50'}`}
                     style={{ paddingLeft: `${Math.max(1, (level - 1) * 1.5)}rem` }}
                     onClick={() => setIsOpen(!isOpen)}
                 >
                     <div className="flex items-center gap-3">
-                        <div 
+                        <div
                             onClick={(e) => { e.stopPropagation(); toggleFolderSelection(node); }}
-                            className={`w-4 h-4 rounded border flex items-center justify-center cursor-pointer transition-colors shrink-0 ${fullySelected ? 'bg-brand-500 border-brand-500' : partiallySelected ? 'bg-brand-500 border-brand-500 relative' : 'bg-white border-slate-300 hover:border-brand-400'}`}
+                            className={`w-4 h-4 rounded border flex items-center justify-center cursor-pointer transition-colors shrink-0 ${fullySelected ? 'bg-brand-500 border-brand-500' : partiallySelected ? 'bg-brand-500 border-brand-500 relative' : `bg-white border-slate-300 ${hoverless ? '' : 'hover:border-brand-400'}`}`}
                         >
                             {fullySelected && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
                             {!fullySelected && partiallySelected && <div className="w-2 h-0.5 bg-white rounded-full"></div>}
@@ -108,8 +129,16 @@ const FileNode = ({
                         {isOpen ? <FolderOpen className="w-5 h-5 text-brand-500 fill-brand-100" /> : <Folder className="w-5 h-5 text-brand-500" />}
                         <span className="font-bold text-slate-700">{node.name}</span>
                         <span className="text-xs font-medium text-slate-400 bg-slate-100 px-2 py-0.5 rounded-full">{node.childrenArray.length} items</span>
+                        {folderModel && (
+                            <span
+                                className={`shrink-0 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide border ${folderModel === 'paraphrase' ? 'bg-amber-50 text-amber-700 border-amber-200' : folderModel === 'mixed' ? 'bg-slate-100 text-slate-600 border-slate-200' : 'bg-blue-50 text-blue-700 border-blue-200'}`}
+                                title={folderModel === 'mixed' ? 'Contains files from multiple models' : `All files indexed with ${folderModel} model`}
+                            >
+                                {folderModel === 'paraphrase' ? 'Paraphrase' : folderModel === 'mixed' ? 'Mixed' : 'General'}
+                            </span>
+                        )}
                     </div>
-                    <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <div className={`flex gap-1 transition-opacity ${hoverless ? '' : 'opacity-0 group-hover:opacity-100'}`}>
                         {onAddToFolder && (
                             <>
                                 <input
@@ -163,6 +192,7 @@ const FileNode = ({
                                 isFolderSelected={isFolderSelected}
                                 isFolderPartiallySelected={isFolderPartiallySelected}
                                 onAddToFolder={onAddToFolder}
+                                hoverless={hoverless}
                             />
                         ))}
                     </motion.div>
@@ -172,7 +202,7 @@ const FileNode = ({
     );
 };
 
-const PastDocuments = ({ user, refreshKey = 0, adminRepoMode = false, onAddToFolder }) => {
+const PastDocuments = ({ user, refreshKey = 0, adminRepoMode = false, onAddToFolder, hoverless = true }) => {
     const { showAlert, showConfirm } = useModal();
     const [documents, setDocuments] = useState([]);
     const [loading, setLoading] = useState(false);
@@ -500,21 +530,31 @@ const PastDocuments = ({ user, refreshKey = 0, adminRepoMode = false, onAddToFol
                                         filteredDocs.map((doc) => {
                                             const isSelected = selectedDocs.includes(doc.document_id);
                                             return (
-                                                <div key={doc.document_id} className={`flex items-center gap-3 px-5 py-3 hover:bg-brand-50/50 group transition-colors ${isSelected ? 'bg-brand-50/80' : ''}`}>
-                                                    <div 
+                                                <div key={doc.document_id} className={`flex items-center gap-3 px-5 py-3 group transition-colors ${hoverless ? '' : 'hover:bg-brand-50/50'} ${isSelected ? 'bg-brand-50/80' : ''}`}>
+                                                    <div
                                                         onClick={() => toggleDocSelection(doc.document_id)}
-                                                        className={`w-4 h-4 rounded border flex items-center justify-center cursor-pointer transition-colors shrink-0 ${isSelected ? 'bg-brand-500 border-brand-500' : 'bg-white border-slate-300 group-hover:border-brand-400'}`}
+                                                        className={`w-4 h-4 rounded border flex items-center justify-center cursor-pointer transition-colors shrink-0 ${isSelected ? 'bg-brand-500 border-brand-500' : `bg-white border-slate-300 ${hoverless ? '' : 'group-hover:border-brand-400'}`}`}
                                                     >
                                                         {isSelected && <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={3} d="M5 13l4 4L19 7" /></svg>}
                                                     </div>
                                                     <FileText className={`w-5 h-5 shrink-0 ${isSelected ? 'text-brand-500' : 'text-slate-400'}`} />
                                                     <div className="flex-1 min-w-0">
-                                                        <p className={`font-bold truncate ${isSelected ? 'text-brand-900' : 'text-slate-800'}`} title={doc.file_name}>{doc.file_name.split(/[/\\]/).pop()}</p>
+                                                        <div className="flex items-center gap-2 min-w-0">
+                                                            <p className={`font-bold truncate ${isSelected ? 'text-brand-900' : 'text-slate-800'}`} title={doc.file_name}>{doc.file_name.split(/[/\\]/).pop()}</p>
+                                                            {doc.model_name && (
+                                                                <span
+                                                                    className={`shrink-0 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide border ${doc.model_name === 'paraphrase' ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-blue-50 text-blue-700 border-blue-200'}`}
+                                                                    title={`Indexed with ${doc.model_name} model`}
+                                                                >
+                                                                    {doc.model_name === 'paraphrase' ? 'Paraphrase' : 'General'}
+                                                                </span>
+                                                            )}
+                                                        </div>
                                                         <p className="text-xs text-slate-500 truncate" title={doc.file_name}>
                                                             In: {doc.file_name}
                                                         </p>
                                                     </div>
-                                                    <div className="flex gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                                                    <div className={`flex gap-1 shrink-0 transition-opacity ${hoverless ? '' : 'opacity-0 group-hover:opacity-100'}`}>
                                                         <button onClick={() => setViewing(viewing?.document_id === doc.document_id ? null : doc)} className="p-2 rounded-lg hover:bg-brand-50 text-slate-500 hover:text-brand-600 transition-colors" title="View details">
                                                             <Eye className="w-4 h-4" />
                                                         </button>
@@ -543,6 +583,7 @@ const PastDocuments = ({ user, refreshKey = 0, adminRepoMode = false, onAddToFol
                                         isFolderSelected={isFolderSelected}
                                         isFolderPartiallySelected={isFolderPartiallySelected}
                                         onAddToFolder={onAddToFolder}
+                                        hoverless={hoverless}
                                     />
                                 </div>
                             )}
