@@ -141,7 +141,29 @@ if not exist "dist\index.html" (
     echo.
 )
 
-REM ---- Show ALL network addresses ----
+REM ---- Open Windows Firewall for port 8000 (inbound) ----
+REM Without this, remote PCs on the same WiFi may be able to load the
+REM login page but get blocked when uploading files (multipart POST) or
+REM streaming SSE progress. Adding the rule once fixes it for all students.
+netsh advfirewall firewall show rule name="NSU PlagiChecker (port 8000)" >nul 2>&1
+if errorlevel 1 (
+    echo  [+] Adding Windows Firewall rule for port 8000...
+    netsh advfirewall firewall add rule name="NSU PlagiChecker (port 8000)" dir=in action=allow protocol=TCP localport=8000 profile=any >nul 2>&1
+    if errorlevel 1 (
+        echo  [!] Could not add firewall rule automatically.
+        echo      Re-run this file as Administrator, or add the rule manually:
+        echo        Control Panel ^> Windows Defender Firewall ^> Advanced Settings
+        echo        Inbound Rules ^> New Rule ^> Port ^> TCP 8000 ^> Allow
+    ) else (
+        echo  [+] Firewall rule added.
+    )
+    echo.
+)
+
+REM ---- Show network addresses (filtered: only real LAN/WiFi adapters) ----
+REM Skip virtual/VPN/loopback/APIPA adapters so students see only the
+REM IPs they can actually reach. Mark the adapter with the default
+REM route as "recommended" so there is one clear link to share.
 echo  -------------------------------------------------------
 echo   Share one of these links with students:
 echo  -------------------------------------------------------
@@ -149,18 +171,20 @@ echo.
 echo   This PC only:
 echo     http://localhost:8000
 echo.
-echo   Other PCs on the network (use any of these):
+echo   Other PCs on the same network:
 
-for /f "tokens=2 delims=:" %%A in ('ipconfig ^| findstr /i "IPv4"') do (
-    set IP=%%A
-    set IP=!IP: =!
-    echo     http://!IP!:8000
-)
+powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$addrs = Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -match '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[01])\.)' -and $_.InterfaceAlias -notmatch 'Loopback|vEthernet|VirtualBox|VMware|WSL|Bluetooth|Hyper-V|Pseudo|Tunnel|Tailscale|ZeroTier|Radmin|Hamachi' };" ^
+  "$defIdx = (Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Sort-Object RouteMetric | Select-Object -First 1).InterfaceIndex;" ^
+  "$primary = $addrs | Where-Object { $_.InterfaceIndex -eq $defIdx } | Select-Object -First 1;" ^
+  "if ($primary) { Write-Host ('     http://' + $primary.IPAddress + ':8000   <-- RECOMMENDED  [' + $primary.InterfaceAlias + ']') -ForegroundColor Green };" ^
+  "foreach ($a in $addrs) { if (-not $primary -or $a.IPAddress -ne $primary.IPAddress) { Write-Host ('     http://' + $a.IPAddress + ':8000            [' + $a.InterfaceAlias + ']') } };" ^
+  "if (-not $addrs) { Write-Host '     (no LAN/WiFi connection detected - connect server PC to network first)' -ForegroundColor Yellow }"
 
 echo.
 echo  -------------------------------------------------------
-echo   Students: open the link above in any browser
-echo   Make sure everyone is on the same WiFi/LAN
+echo   Students: open the RECOMMENDED link in any browser
+echo   Make sure everyone is on the same WiFi/LAN as server
 echo  -------------------------------------------------------
 echo.
 

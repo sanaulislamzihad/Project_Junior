@@ -284,58 +284,70 @@ function MainApp() {
   }, [checkQueue]);
 
   const processQueueItem = async (id, file, directText, isRepoUpload) => {
-    setCheckQueue(q => q.map(item => item.id === id ? { ...item, status: 'analyzing' } : item));
-
-    // Get the repoTarget stored in the queue item
-    const queueItem = checkQueue.find(i => i.id === id);
-
-    const formData = new FormData();
-    if (file) {
-      formData.append('file', file);
-      formData.append('filename_override', file.customPath || file.webkitRelativePath || file.name || '');
-    } else if (directText) {
-      formData.append('direct_text', directText);
-      formData.append('filename_override', 'direct_text_input.txt');
-    }
-
-    let repoTypeValue = 'university';
-    let add_to_repo = 'false';
-
-    if (isRepoUpload) {
-      add_to_repo = 'true';
-      // Use the target stored in the queue item; admin always goes to university
-      repoTypeValue = user?.role === 'admin' ? 'university' : (queueItem?.repoTarget || 'personal');
-    } else {
-      if (compareAgainst.includes('university') && compareAgainst.includes('personal')) {
-        repoTypeValue = 'both';
-      } else if (compareAgainst.includes('personal')) {
-        repoTypeValue = 'personal';
-      }
-      if (repoTypeValue === 'university' && user?.role === 'teacher' && user?.id) {
-        repoTypeValue = 'both';
-      }
-    }
-
-    formData.append('repo_type', repoTypeValue);
-    formData.append('role', user?.role || 'teacher');
-    formData.append('add_to_repo', add_to_repo);
-    if (user?.id) formData.append('user_id', String(user.id));
-    formData.append('model_name', queueItem?.modelName || 'default');
-    
     try {
+      setCheckQueue(q => q.map(item => item.id === id ? { ...item, status: 'analyzing' } : item));
+
+      // Get the repoTarget stored in the queue item
+      const queueItem = checkQueue.find(i => i.id === id);
+
+      const formData = new FormData();
+      if (file) {
+        formData.append('file', file);
+        formData.append('filename_override', file.customPath || file.webkitRelativePath || file.name || '');
+      } else if (directText) {
+        formData.append('direct_text', directText);
+        formData.append('filename_override', 'direct_text_input.txt');
+      } else {
+        throw new Error('No file or text provided.');
+      }
+
+      let repoTypeValue = 'university';
+      let add_to_repo = 'false';
+
+      if (isRepoUpload) {
+        add_to_repo = 'true';
+        // Use the target stored in the queue item; admin always goes to university
+        repoTypeValue = user?.role === 'admin' ? 'university' : (queueItem?.repoTarget || 'personal');
+      } else {
+        if (compareAgainst.includes('university') && compareAgainst.includes('personal')) {
+          repoTypeValue = 'both';
+        } else if (compareAgainst.includes('personal')) {
+          repoTypeValue = 'personal';
+        }
+        if (repoTypeValue === 'university' && user?.role === 'teacher' && user?.id) {
+          repoTypeValue = 'both';
+        }
+      }
+
+      formData.append('repo_type', repoTypeValue);
+      formData.append('role', user?.role || 'teacher');
+      formData.append('add_to_repo', add_to_repo);
+      if (user?.id) formData.append('user_id', String(user.id));
+      formData.append('model_name', queueItem?.modelName || 'default');
+
+      console.log('[PlagiChecker] Submitting to', `${API_BASE || window.location.origin}/analyze`, { repo_type: repoTypeValue, role: user?.role, add_to_repo, has_file: !!file, has_text: !!directText });
+
       const response = await axios.post(`${API_BASE}/analyze`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 0, // no client-side timeout — huge PDFs can take minutes to upload over WiFi
       });
       setCheckQueue(q => q.map(item => item.id === id ? { ...item, jobId: response.data.job_id } : item));
     } catch (error) {
-      console.error("Error checking document:", error);
-      const raw = error.response?.data?.detail || error.message || "Backend not reachable.";
-      let msg = raw;
-      if (typeof raw === 'string' && raw.startsWith('MODEL_NOT_AVAILABLE:')) {
-        const parts = raw.split(':');
+      console.error("[PlagiChecker] Submit failed:", error);
+      let msg;
+      if (error.response) {
+        // Server responded with error
+        msg = error.response.data?.detail || `Server error ${error.response.status}`;
+      } else if (error.request) {
+        // Request sent but no response — network/CORS/firewall
+        msg = `Cannot reach server. Check WiFi connection and make sure you opened the correct http://<server-ip>:8000 link. (${error.message})`;
+      } else {
+        msg = error.message || "Unknown error.";
+      }
+      if (typeof msg === 'string' && msg.startsWith('MODEL_NOT_AVAILABLE:')) {
+        const parts = msg.split(':');
         const modelKey = parts[1] || 'paraphrase';
         msg = `The "${modelKey === 'paraphrase' ? 'Research / Paraphrase' : modelKey}" model is not downloaded on this server. Ask your admin to download it, or switch to General Purpose model.`;
-        // Refresh availability so the button becomes disabled
         axios.get(`${API_BASE}/models/status`).then(res => setModelAvailability(res.data?.models || {})).catch(() => {});
       }
       setCheckQueue(q => q.map(item => item.id === id ? { ...item, status: 'error', error: msg } : item));
@@ -475,13 +487,23 @@ function MainApp() {
     formData.append('source_file', sourceFile);
     formData.append('target_file', targetFile);
     try {
+      console.log('[PlagiChecker] Comparing via', `${API_BASE || window.location.origin}/compare`);
       const response = await axios.post(`${API_BASE}/compare`, formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 0,
       });
       setDiffJobId(response.data.job_id);
     } catch (error) {
-      console.error("Error comparing docs:", error);
-      await showAlert("Failed to compare documents.", 'Error', 'error');
+      console.error("[PlagiChecker] Compare failed:", error);
+      let msg;
+      if (error.response) {
+        msg = error.response.data?.detail || `Server error ${error.response.status}`;
+      } else if (error.request) {
+        msg = `Cannot reach server. Check WiFi and the http://<server-ip>:8000 link. (${error.message})`;
+      } else {
+        msg = error.message || "Unknown error.";
+      }
+      await showAlert(msg, 'Comparison Failed', 'error');
       setDiffAnalyzing(false);
     }
   };

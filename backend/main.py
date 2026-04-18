@@ -685,10 +685,13 @@ async def _run_analysis(
         }
         analysis_results[job_id] = {"data": result, "created_at": time.time()}
 
-        # Persist result to DB (survives logout) — strip heavy base64 fields.
+        # Persist result to DB (survives logout). Keep source_pdf_base64 and
+        # source_text so the PDF viewer + text panel still render after refresh.
+        # Drop highlighted_pdf_base64 — it's redundant with source_pdf_base64
+        # (frontend repaints highlights from highlight_summary / text_highlights).
         if submitted_by and not will_save:
             persistent = {k: v for k, v in result.items()
-                          if k not in ("source_pdf_base64", "highlighted_pdf_base64", "source_text")}
+                          if k not in ("highlighted_pdf_base64",)}
             db.save_job_result(submitted_by, job_id, original_filename, persistent)
 
         await queue.put({"progress": 100, "stage": "Done"})
@@ -1089,10 +1092,16 @@ if os.path.exists(_DIST_DIR):
         p = os.path.join(_DIST_DIR, "logo.svg")
         return FileResponse(p) if os.path.exists(p) else HTMLResponse("", status_code=204)
 
-    # Catch-all: serve index.html for all frontend routes (React SPA)
+    # Catch-all: serve index.html for all frontend routes (React SPA).
+    # no-store on index.html so browsers on student laptops always fetch the
+    # latest JS bundle hash after a rebuild — otherwise stale cached HTML
+    # keeps pointing at a deleted JS file and the app silently breaks.
     @app.get("/{full_path:path}", include_in_schema=False)
     def serve_spa(full_path: str):
-        return FileResponse(_INDEX_HTML)
+        return FileResponse(
+            _INDEX_HTML,
+            headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+        )
 
 
 if __name__ == "__main__":

@@ -17,6 +17,7 @@ import AnalyzingProgress from './AnalyzingProgress';
 const AdminDashboard = () => {
     const { user, logout } = useAuth();
     const { showAlert, showConfirm } = useModal();
+    const navigate = useNavigate();
     const [appMode, setAppMode] = useState('manage-users'); // 'manage-users' | 'manage-repo'
     const [users, setUsers] = useState([]);
     const [loading, setLoading] = useState(true);
