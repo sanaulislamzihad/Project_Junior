@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from typing import Optional
 from sse_starlette.sse import EventSourceResponse
 
 # Import our modules
@@ -210,6 +211,16 @@ class AddTeacherRequest(BaseModel):
     email: str
     password: str
 
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
+
+class UpdateUserRequest(BaseModel):
+    name: Optional[str] = None
+    email: Optional[str] = None
+    nsu_id: Optional[str] = None
+    password: Optional[str] = None
+
 
 # ==================== AUTH ENDPOINTS ====================
 
@@ -218,6 +229,10 @@ def login(req: LoginRequest):
     user = db.authenticate_user(req.email, req.password, req.role)
     if not user:
         raise HTTPException(status_code=401, detail="Invalid email or password for this role.")
+    try:
+        db.record_login(user["id"])
+    except Exception:
+        pass
     token = _create_session(user)
     return {"success": True, "user": user, "token": token}
 
@@ -261,6 +276,80 @@ def delete_user(user_id: int, current_user: dict = Depends(require_admin)):
     if not success:
         raise HTTPException(status_code=404, detail="User not found or cannot be deleted.")
     return {"success": True}
+
+
+@app.put("/auth/users/{user_id}")
+def update_user_endpoint(user_id: int, req: UpdateUserRequest, current_user: dict = Depends(require_admin)):
+    """Admin updates a user's name, email, nsu_id, and/or password."""
+    target = db.get_user_by_id(user_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="User not found.")
+    if target.get("role") == "admin":
+        raise HTTPException(status_code=403, detail="Admins cannot be edited from this endpoint.")
+
+    if req.password is not None and len(req.password) > 0 and len(req.password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters.")
+
+    if req.email and req.email.lower() != target["email"].lower() and db.email_exists(req.email):
+        raise HTTPException(status_code=409, detail="An account with this email already exists.")
+
+    updated = db.update_user(
+        user_id,
+        name=req.name.strip() if req.name else None,
+        email=req.email.strip() if req.email else None,
+        nsu_id=req.nsu_id if req.nsu_id is not None else None,
+        password=req.password if req.password else None,
+    )
+    if not updated:
+        raise HTTPException(status_code=400, detail="Could not update user (email may be in use).")
+    return {"success": True, "user": updated}
+
+
+@app.post("/auth/change-password")
+def change_own_password(req: ChangePasswordRequest, current_user: dict = Depends(require_auth)):
+    """Any logged-in user can change their own password by confirming the current one."""
+    if len(req.new_password) < 6:
+        raise HTTPException(status_code=400, detail="New password must be at least 6 characters.")
+    if not db.verify_password(current_user["id"], req.current_password):
+        raise HTTPException(status_code=401, detail="Current password is incorrect.")
+    updated = db.update_user(current_user["id"], password=req.new_password)
+    if not updated:
+        raise HTTPException(status_code=500, detail="Failed to update password.")
+    return {"success": True}
+
+
+@app.get("/auth/activity")
+def get_activity(current_user: dict = Depends(require_admin)):
+    """Dashboard data: user counts, registrations, recent logins, currently active sessions."""
+    overview = db.get_activity_overview()
+    now = time.time()
+
+    active_map: dict = {}
+    for token, sess in list(_sessions.items()):
+        if now - sess.get("created_at", 0) > SESSION_TTL:
+            continue
+        u = sess.get("user") or {}
+        uid = u.get("id")
+        if uid is None or u.get("role") == "admin":
+            continue
+        existing = active_map.get(uid)
+        if not existing or sess["created_at"] > existing["session_started_at"]:
+            active_map[uid] = {
+                "id": uid,
+                "name": u.get("name"),
+                "email": u.get("email"),
+                "role": u.get("role"),
+                "nsu_id": u.get("nsu_id"),
+                "session_started_at": sess["created_at"],
+            }
+
+    active_sessions = sorted(active_map.values(), key=lambda x: x["session_started_at"], reverse=True)
+    for s in active_sessions:
+        s["session_started_iso"] = datetime.fromtimestamp(s["session_started_at"], tz=timezone.utc).isoformat()
+
+    overview["active_sessions"] = active_sessions
+    overview["active_session_count"] = len(active_sessions)
+    return overview
 
 
 @app.get("/api/health")

@@ -3,14 +3,15 @@ import axios from 'axios';
 import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useModal } from '../context/ModalContext';
-import { getUsers, addUser, removeUser } from '../data/users';
+import { getUsers, addUser, removeUser, updateUser, changeOwnPassword, getActivity } from '../data/users';
 import UploadZone from './UploadZone';
 import PastDocuments from './PastDocuments';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
     ShieldCheck, Users, UserPlus, Trash2, Search,
     GraduationCap, User, LogOut, Mail, Lock, X, ChevronDown, Loader2,
-    Database, FolderOpen, Layers, FileText, CheckCircle, Upload
+    Database, FolderOpen, Layers, FileText, CheckCircle, Upload,
+    Pencil, Activity, KeyRound, Clock, TrendingUp, Save, IdCard, AlertTriangle
 } from 'lucide-react';
 import AnalyzingProgress from './AnalyzingProgress';
 
@@ -18,7 +19,7 @@ const AdminDashboard = () => {
     const { user, logout } = useAuth();
     const { showAlert, showConfirm } = useModal();
     const navigate = useNavigate();
-    const [appMode, setAppMode] = useState('manage-users'); // 'manage-users' | 'manage-repo'
+    const [appMode, setAppMode] = useState('manage-users'); // 'manage-users' | 'activity' | 'manage-repo' | 'queue'
     const [users, setUsers] = useState([]);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
@@ -32,6 +33,34 @@ const AdminDashboard = () => {
     const [addRepoJobId, setAddRepoJobId] = useState(null);
     const [pastDocsRefresh, setPastDocsRefresh] = useState(0);
 
+    // Edit user modal state
+    const [editingUser, setEditingUser] = useState(null); // user object or null
+    const [editForm, setEditForm] = useState({ name: '', email: '', nsu_id: '', password: '' });
+    const [editError, setEditError] = useState('');
+    const [editSaving, setEditSaving] = useState(false);
+
+    // Change password modal state
+    const [showChangePassword, setShowChangePassword] = useState(false);
+    const [pwForm, setPwForm] = useState({ current: '', next: '', confirm: '' });
+    const [pwError, setPwError] = useState('');
+    const [pwSuccess, setPwSuccess] = useState('');
+    const [pwSaving, setPwSaving] = useState(false);
+
+    // Activity dashboard state
+    const [activity, setActivity] = useState(null);
+    const [activityLoading, setActivityLoading] = useState(false);
+    const [activityError, setActivityError] = useState('');
+
+    // Model selection for repo uploads (like teacher)
+    const [selectedModel, setSelectedModel] = useState('default');
+    const [modelAvailability, setModelAvailability] = useState({});
+
+    useEffect(() => {
+        axios.get('/models/status')
+            .then(res => setModelAvailability(res.data?.models || {}))
+            .catch(() => {});
+    }, []);
+
     const storageKey = user?.id ? `plagichecker:adminapp:queue:${user.id}` : null;
     const [adminQueue, setAdminQueue] = useState([]);
     const [stateHydrated, setStateHydrated] = useState(false);
@@ -43,7 +72,7 @@ const AdminDashboard = () => {
                 const raw = localStorage.getItem(storageKey);
                 if (raw) {
                     const saved = JSON.parse(raw);
-                    if (saved.appMode && ['manage-users', 'manage-repo', 'queue'].includes(saved.appMode)) setAppMode(saved.appMode);
+                    if (saved.appMode && ['manage-users', 'activity', 'manage-repo', 'queue'].includes(saved.appMode)) setAppMode(saved.appMode);
                     if (saved.adminQueue) setAdminQueue(saved.adminQueue);
                 }
             } catch(e) {}
@@ -90,6 +119,7 @@ const AdminDashboard = () => {
             formData.append('role', 'admin');
             formData.append('add_to_repo', 'true');
             if (user?.id) formData.append('user_id', String(user.id));
+            formData.append('model_name', item.modelName || 'default');
             
             try {
                 const response = await axios.post('/analyze', formData, {
@@ -161,7 +191,8 @@ const AdminDashboard = () => {
             file,
             status: 'pending',
             jobId: null,
-            error: null
+            error: null,
+            modelName: selectedModel,
         }));
         setAdminQueue(prev => [...prev, ...newItems]);
         setAppMode('queue');
@@ -178,6 +209,117 @@ const AdminDashboard = () => {
             await refreshUsers();
         } catch (error) {
             await showAlert('Failed to remove user: ' + (error.response?.data?.detail || 'Server error'), 'Error', 'error');
+        }
+    };
+
+    const openEditUser = (u) => {
+        setEditingUser(u);
+        setEditForm({
+            name: u.name || '',
+            email: u.email || '',
+            nsu_id: u.nsu_id || '',
+            password: '',
+        });
+        setEditError('');
+    };
+
+    const closeEditUser = () => {
+        setEditingUser(null);
+        setEditError('');
+        setEditSaving(false);
+    };
+
+    const handleSaveUser = async (e) => {
+        e.preventDefault();
+        if (!editingUser) return;
+        setEditError('');
+        if (!editForm.name.trim() || !editForm.email.trim()) {
+            setEditError('Name and email are required.');
+            return;
+        }
+        if (editForm.password && editForm.password.length < 6) {
+            setEditError('Password must be at least 6 characters (or leave blank to keep current).');
+            return;
+        }
+        setEditSaving(true);
+        try {
+            const payload = {
+                name: editForm.name.trim(),
+                email: editForm.email.trim(),
+                nsu_id: editForm.nsu_id.trim() || null,
+            };
+            if (editForm.password) payload.password = editForm.password;
+            await updateUser(editingUser.id, payload);
+            await refreshUsers();
+            closeEditUser();
+        } catch (err) {
+            setEditError(err.response?.data?.detail || 'Failed to update user.');
+        } finally {
+            setEditSaving(false);
+        }
+    };
+
+    const handleChangePassword = async (e) => {
+        e.preventDefault();
+        setPwError('');
+        setPwSuccess('');
+        if (!pwForm.current || !pwForm.next || !pwForm.confirm) {
+            setPwError('All fields are required.');
+            return;
+        }
+        if (pwForm.next.length < 6) {
+            setPwError('New password must be at least 6 characters.');
+            return;
+        }
+        if (pwForm.next !== pwForm.confirm) {
+            setPwError('New password and confirmation do not match.');
+            return;
+        }
+        setPwSaving(true);
+        try {
+            await changeOwnPassword(pwForm.current, pwForm.next);
+            setPwSuccess('Password updated successfully.');
+            setPwForm({ current: '', next: '', confirm: '' });
+            setTimeout(() => {
+                setShowChangePassword(false);
+                setPwSuccess('');
+            }, 1500);
+        } catch (err) {
+            setPwError(err.response?.data?.detail || 'Failed to change password.');
+        } finally {
+            setPwSaving(false);
+        }
+    };
+
+    const refreshActivity = async () => {
+        setActivityLoading(true);
+        setActivityError('');
+        try {
+            const data = await getActivity();
+            setActivity(data);
+        } catch (err) {
+            setActivityError(err.response?.data?.detail || 'Failed to load activity data.');
+        } finally {
+            setActivityLoading(false);
+        }
+    };
+
+    useEffect(() => {
+        if (appMode === 'activity') {
+            refreshActivity();
+            const interval = setInterval(refreshActivity, 20000);
+            return () => clearInterval(interval);
+        }
+    }, [appMode]);
+
+    const formatDateTime = (iso) => {
+        if (!iso) return '—';
+        try {
+            const d = new Date(iso.includes('T') ? iso : iso.replace(' ', 'T') + 'Z');
+            if (isNaN(d.getTime())) return iso;
+            return d.toLocaleString();
+        } catch {
+            return iso;
         }
     };
 
@@ -210,12 +352,12 @@ const AdminDashboard = () => {
                     {/* Prominent Mode Toggle for Admins */}
                     <div className="hidden lg:flex p-1.5 bg-white/40 backdrop-blur-xl rounded-[2rem] border border-white/60 shadow-xl shadow-slate-200/40 relative">
                         <AnimatePresence mode="wait">
-                            {['manage-users', 'manage-repo', 'queue'].map((mode) => (
+                            {['manage-users', 'activity', 'manage-repo', 'queue'].map((mode) => (
                                 <button
                                     key={mode}
                                     onClick={() => setAppMode(mode)}
                                     className={`
-                                        relative px-6 py-3 rounded-[1.5rem] text-sm font-black transition-all duration-300 flex items-center gap-2.5 z-10
+                                        relative px-5 py-3 rounded-[1.5rem] text-sm font-black transition-all duration-300 flex items-center gap-2.5 z-10
                                         ${appMode === mode ? 'text-brand-700' : 'text-slate-400 hover:text-slate-600'}
                                     `}
                                 >
@@ -227,14 +369,20 @@ const AdminDashboard = () => {
                                         />
                                     )}
                                     {mode === 'manage-users' && <Users size={16} className={appMode === 'manage-users' ? 'text-brand-600' : 'text-slate-400'} />}
+                                    {mode === 'activity' && <Activity size={16} className={appMode === 'activity' ? 'text-brand-600' : 'text-slate-400'} />}
                                     {mode === 'manage-repo' && <FolderOpen size={16} className={appMode === 'manage-repo' ? 'text-brand-600' : 'text-slate-400'} />}
                                     {mode === 'queue' && <Layers size={16} className={appMode === 'queue' ? 'text-brand-600' : 'text-slate-400'} />}
 
                                     <span className="tracking-tight flex items-center gap-2">
-                                        {mode === 'manage-users' ? 'User Management' : mode === 'manage-repo' ? 'University Repository' : 'Processing Queue'}
+                                        {mode === 'manage-users' ? 'User Management' : mode === 'activity' ? 'Activity' : mode === 'manage-repo' ? 'University Repository' : 'Processing Queue'}
                                         {mode === 'queue' && adminQueue.length > 0 && (
                                             <span className="flex h-5 items-center justify-center px-2 bg-brand-500 text-white text-[10px] font-black rounded-full shadow-sm animate-pulse">
                                             {adminQueue.filter(i => i.status === 'completed').length}/{adminQueue.length}
+                                            </span>
+                                        )}
+                                        {mode === 'activity' && activity?.active_session_count > 0 && (
+                                            <span className="flex h-5 items-center justify-center px-2 bg-emerald-500 text-white text-[10px] font-black rounded-full shadow-sm">
+                                                {activity.active_session_count}
                                             </span>
                                         )}
                                     </span>
@@ -242,11 +390,19 @@ const AdminDashboard = () => {
                             ))}
                         </AnimatePresence>
                     </div>
-                    <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-3">
                         <div className="flex items-center gap-2 px-3 py-1.5 bg-emerald-50 border border-emerald-200 rounded-full">
                             <ShieldCheck className="w-4 h-4 text-emerald-600" />
                             <span className="text-sm font-semibold text-emerald-700">{user?.name}</span>
                         </div>
+                        <button
+                            onClick={() => { setShowChangePassword(true); setPwError(''); setPwSuccess(''); setPwForm({ current: '', next: '', confirm: '' }); }}
+                            className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-500 hover:text-brand-600 hover:bg-brand-50 rounded-lg transition-all"
+                            title="Change your admin password"
+                        >
+                            <KeyRound className="w-4 h-4" />
+                            Password
+                        </button>
                         <button
                             onClick={handleLogout}
                             className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-all"
@@ -466,19 +622,195 @@ const AdminDashboard = () => {
                                                     </td>
                                                     <td className="px-6 py-4 text-sm text-slate-500 font-mono">{u.nsu_id || '—'}</td>
                                                     <td className="px-6 py-4 text-right">
-                                                        <button
-                                                            onClick={() => handleRemoveUser(u.id, u.name)}
-                                                            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50 rounded-lg transition-all"
-                                                        >
-                                                            <Trash2 className="w-4 h-4" />
-                                                            Remove
-                                                        </button>
+                                                        <div className="inline-flex items-center gap-1">
+                                                            <button
+                                                                onClick={() => openEditUser(u)}
+                                                                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-brand-600 hover:bg-brand-50 rounded-lg transition-all"
+                                                            >
+                                                                <Pencil className="w-4 h-4" />
+                                                                Edit
+                                                            </button>
+                                                            <button
+                                                                onClick={() => handleRemoveUser(u.id, u.name)}
+                                                                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50 rounded-lg transition-all"
+                                                            >
+                                                                <Trash2 className="w-4 h-4" />
+                                                                Remove
+                                                            </button>
+                                                        </div>
                                                     </td>
                                                 </tr>
                                             ))
                                         )}
                                     </tbody>
                                 </table>
+                            </div>
+                        </div>
+                    </div>
+                )}
+
+                {/* 1b. Activity Mode */}
+                {appMode === 'activity' && (
+                    <div className="w-full">
+                        <div className="mb-8 flex justify-between items-start">
+                            <div>
+                                <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">Server Activity</h1>
+                                <p className="text-slate-500 mt-1">Live snapshot of who's logged in and who has been registered.</p>
+                            </div>
+                            <button
+                                onClick={refreshActivity}
+                                disabled={activityLoading}
+                                className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-sm font-semibold text-slate-600 hover:bg-slate-50 disabled:opacity-50"
+                            >
+                                {activityLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <TrendingUp className="w-4 h-4" />}
+                                Refresh
+                            </button>
+                        </div>
+
+                        {activityError && (
+                            <div className="mb-6 bg-red-50 border border-red-200 text-red-700 rounded-xl px-4 py-3 text-sm font-medium">
+                                {activityError}
+                            </div>
+                        )}
+
+                        <div className="grid grid-cols-2 md:grid-cols-3 xl:grid-cols-6 gap-4 mb-8">
+                            {[
+                                { label: 'Active Now', value: activity?.active_session_count ?? 0, icon: Activity, box: 'bg-emerald-100 border-emerald-200', ic: 'text-emerald-600' },
+                                { label: 'Teachers', value: activity?.teachers ?? 0, icon: User, box: 'bg-indigo-100 border-indigo-200', ic: 'text-indigo-600' },
+                                { label: 'Students', value: activity?.students ?? 0, icon: GraduationCap, box: 'bg-teal-100 border-teal-200', ic: 'text-teal-600' },
+                                { label: 'Active 24h', value: activity?.active_last_day ?? 0, icon: Clock, box: 'bg-amber-100 border-amber-200', ic: 'text-amber-600' },
+                                { label: 'New (7d)', value: activity?.new_last_7_days ?? 0, icon: UserPlus, box: 'bg-cyan-100 border-cyan-200', ic: 'text-cyan-600' },
+                                { label: 'New (30d)', value: activity?.new_last_30_days ?? 0, icon: TrendingUp, box: 'bg-rose-100 border-rose-200', ic: 'text-rose-600' },
+                            ].map((card) => (
+                                <div key={card.label} className="bg-white/90 backdrop-blur-sm border border-slate-200 rounded-2xl p-5 shadow-sm">
+                                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center border mb-3 ${card.box}`}>
+                                        <card.icon className={`w-5 h-5 ${card.ic}`} />
+                                    </div>
+                                    <p className="text-2xl font-extrabold text-slate-900">{card.value}</p>
+                                    <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mt-1">{card.label}</p>
+                                </div>
+                            ))}
+                        </div>
+
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                            {/* Active sessions */}
+                            <div className="bg-white/90 backdrop-blur-sm border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+                                <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-2">
+                                    <div className="w-8 h-8 rounded-lg bg-emerald-100 flex items-center justify-center">
+                                        <Activity className="w-4 h-4 text-emerald-600" />
+                                    </div>
+                                    <h3 className="font-bold text-slate-900">Currently Online</h3>
+                                    <span className="ml-auto text-xs font-semibold text-slate-400">{activity?.active_sessions?.length || 0}</span>
+                                </div>
+                                <div className="max-h-[420px] overflow-y-auto">
+                                    {!activity && activityLoading ? (
+                                        <div className="py-10 text-center text-slate-400">
+                                            <Loader2 className="w-6 h-6 mx-auto animate-spin text-brand-500" />
+                                        </div>
+                                    ) : (activity?.active_sessions || []).length === 0 ? (
+                                        <p className="py-10 text-center text-sm text-slate-400">No active user sessions right now.</p>
+                                    ) : (
+                                        <table className="w-full">
+                                            <tbody>
+                                                {activity.active_sessions.map((s) => (
+                                                    <tr key={s.id} className="border-b border-slate-50 last:border-0">
+                                                        <td className="px-5 py-3">
+                                                            <div className="flex items-center gap-3">
+                                                                <span className={`w-2 h-2 rounded-full bg-emerald-500 animate-pulse`} />
+                                                                <div>
+                                                                    <p className="font-semibold text-slate-800 text-sm">{s.name}</p>
+                                                                    <p className="text-xs text-slate-500">{s.email}</p>
+                                                                </div>
+                                                            </div>
+                                                        </td>
+                                                        <td className="px-5 py-3 text-right">
+                                                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold capitalize ${s.role === 'teacher' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-teal-50 text-teal-700 border border-teal-200'}`}>
+                                                                {s.role}
+                                                            </span>
+                                                            <p className="text-[11px] text-slate-400 mt-1">since {formatDateTime(s.session_started_iso)}</p>
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Recent logins */}
+                            <div className="bg-white/90 backdrop-blur-sm border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+                                <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-2">
+                                    <div className="w-8 h-8 rounded-lg bg-indigo-100 flex items-center justify-center">
+                                        <Clock className="w-4 h-4 text-indigo-600" />
+                                    </div>
+                                    <h3 className="font-bold text-slate-900">Recent Logins</h3>
+                                </div>
+                                <div className="max-h-[420px] overflow-y-auto">
+                                    {(activity?.recent_logins || []).length === 0 ? (
+                                        <p className="py-10 text-center text-sm text-slate-400">No logins recorded yet.</p>
+                                    ) : (
+                                        <table className="w-full">
+                                            <tbody>
+                                                {activity.recent_logins.map((r) => (
+                                                    <tr key={r.id} className="border-b border-slate-50 last:border-0">
+                                                        <td className="px-5 py-3">
+                                                            <p className="font-semibold text-slate-800 text-sm">{r.name}</p>
+                                                            <p className="text-xs text-slate-500">{r.email}</p>
+                                                        </td>
+                                                        <td className="px-5 py-3 text-right">
+                                                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold capitalize ${r.role === 'teacher' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-teal-50 text-teal-700 border border-teal-200'}`}>
+                                                                {r.role}
+                                                            </span>
+                                                            <p className="text-[11px] text-slate-400 mt-1">{formatDateTime(r.last_login_at)} · {r.login_count} login{r.login_count === 1 ? '' : 's'}</p>
+                                                        </td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    )}
+                                </div>
+                            </div>
+
+                            {/* Recent registrations */}
+                            <div className="lg:col-span-2 bg-white/90 backdrop-blur-sm border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+                                <div className="px-5 py-4 border-b border-slate-100 flex items-center gap-2">
+                                    <div className="w-8 h-8 rounded-lg bg-cyan-100 flex items-center justify-center">
+                                        <UserPlus className="w-4 h-4 text-cyan-600" />
+                                    </div>
+                                    <h3 className="font-bold text-slate-900">Newest Registrations</h3>
+                                </div>
+                                {(activity?.recent_registrations || []).length === 0 ? (
+                                    <p className="py-10 text-center text-sm text-slate-400">No users registered yet.</p>
+                                ) : (
+                                    <div className="overflow-x-auto">
+                                        <table className="w-full">
+                                            <thead>
+                                                <tr className="border-b border-slate-100">
+                                                    <th className="text-left text-xs font-semibold text-slate-500 uppercase tracking-wider px-5 py-3">Name</th>
+                                                    <th className="text-left text-xs font-semibold text-slate-500 uppercase tracking-wider px-5 py-3">Email</th>
+                                                    <th className="text-left text-xs font-semibold text-slate-500 uppercase tracking-wider px-5 py-3">Role</th>
+                                                    <th className="text-left text-xs font-semibold text-slate-500 uppercase tracking-wider px-5 py-3">NSU ID</th>
+                                                    <th className="text-left text-xs font-semibold text-slate-500 uppercase tracking-wider px-5 py-3">Joined</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody>
+                                                {activity.recent_registrations.map((r) => (
+                                                    <tr key={r.id} className="border-b border-slate-50 last:border-0">
+                                                        <td className="px-5 py-3 text-sm font-semibold text-slate-800">{r.name}</td>
+                                                        <td className="px-5 py-3 text-sm text-slate-600">{r.email}</td>
+                                                        <td className="px-5 py-3">
+                                                            <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-bold capitalize ${r.role === 'teacher' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-teal-50 text-teal-700 border border-teal-200'}`}>
+                                                                {r.role}
+                                                            </span>
+                                                        </td>
+                                                        <td className="px-5 py-3 text-xs font-mono text-slate-500">{r.nsu_id || '—'}</td>
+                                                        <td className="px-5 py-3 text-xs text-slate-500">{formatDateTime(r.created_at)}</td>
+                                                    </tr>
+                                                ))}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                )}
                             </div>
                         </div>
                     </div>
@@ -501,18 +833,55 @@ const AdminDashboard = () => {
                                             <p className="text-xs text-slate-500 font-medium">Adds to University Repo</p>
                                         </div>
                                     </div>
+                                    {/* Model selector for repo uploads */}
+                                    <div className="px-6 pt-4 pb-1">
+                                        <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">AI Model</p>
+                                        <div className="flex gap-2">
+                                            {[
+                                                { id: 'default', label: 'General', sub: 'all-mpnet-base-v2' },
+                                                { id: 'paraphrase', label: 'Paraphrase', sub: 'paraphrase-mpnet-base-v2' },
+                                            ].map(m => {
+                                                const avail = modelAvailability[m.id];
+                                                const notCached = avail !== undefined && avail.cached === false;
+                                                return (
+                                                    <button
+                                                        key={m.id}
+                                                        type="button"
+                                                        onClick={() => setSelectedModel(m.id)}
+                                                        className={`flex-1 flex items-center gap-2 px-3 py-2.5 rounded-xl border-2 text-left transition-all ${selectedModel === m.id ? 'border-brand-500 bg-brand-50 shadow-sm' : 'border-slate-200 hover:border-slate-300 bg-white'}`}
+                                                    >
+                                                        <div className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 border-2 transition-colors ${selectedModel === m.id ? 'border-brand-500 bg-brand-500' : 'border-slate-300 bg-white'}`}>
+                                                            {selectedModel === m.id && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                                                        </div>
+                                                        <div>
+                                                            <span className={`text-xs font-black block ${selectedModel === m.id ? 'text-brand-700' : 'text-slate-600'}`}>{m.label}</span>
+                                                            <span className="text-[10px] font-medium text-slate-400">{notCached ? 'Needs internet 1st use' : m.sub}</span>
+                                                        </div>
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                        <div className={`mt-2 mx-0 rounded-xl border px-3 py-2.5 flex gap-2 items-start ${selectedModel === 'paraphrase' ? 'bg-amber-50 border-amber-200' : 'bg-blue-50 border-blue-200'}`}>
+                                            <AlertTriangle className={`w-3.5 h-3.5 shrink-0 mt-0.5 ${selectedModel === 'paraphrase' ? 'text-amber-500' : 'text-blue-400'}`} />
+                                            <p className={`text-[11px] font-medium leading-snug ${selectedModel === 'paraphrase' ? 'text-amber-700' : 'text-blue-700'}`}>
+                                                {selectedModel === 'paraphrase'
+                                                    ? 'Documents uploaded here will only match when checked using Paraphrase model. Use the same model in Plagiarism Check.'
+                                                    : 'Documents uploaded here will only match when checked using General Purpose model. Use the same model in Plagiarism Check.'}
+                                            </p>
+                                        </div>
+                                    </div>
                                     <div className="p-6">
-                                        <UploadZone 
-                                           onUpload={handleUniversityUpload} 
-                                           isAnalyzing={false} 
-                                           jobId={null} 
-                                           onComplete={() => {}} 
-                                           user={user} 
-                                           showHero={false} 
-                                           title="Quick Upload" 
-                                           description="Drag & drop multiple files or folders" 
-                                           loadingLabel="Indexing..." 
-                                           loadingSubLabel="Adding to global database" 
+                                        <UploadZone
+                                           onUpload={handleUniversityUpload}
+                                           isAnalyzing={false}
+                                           jobId={null}
+                                           onComplete={() => {}}
+                                           user={user}
+                                           showHero={false}
+                                           title="Quick Upload"
+                                           description="Drag & drop multiple files or folders"
+                                           loadingLabel="Indexing..."
+                                           loadingSubLabel="Adding to global database"
                                         />
                                     </div>
                                 </motion.div>
@@ -643,6 +1012,181 @@ const AdminDashboard = () => {
             <footer className="p-6 text-center text-slate-400 text-sm border-t border-slate-200/50 mt-auto">
                 <p>© 2026 North South University • Academic Integrity System</p>
             </footer>
+
+            {/* Edit User Modal */}
+            <AnimatePresence>
+                {editingUser && (
+                    <motion.div
+                        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4"
+                        onClick={closeEditUser}
+                    >
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.96, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.96, y: 10 }}
+                            className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden"
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                    <div className="w-9 h-9 rounded-xl bg-brand-100 flex items-center justify-center">
+                                        <Pencil className="w-4 h-4 text-brand-600" />
+                                    </div>
+                                    <div>
+                                        <h3 className="font-bold text-slate-900">Edit {editingUser.role === 'teacher' ? 'Teacher' : 'Student'}</h3>
+                                        <p className="text-xs text-slate-500">Update account details or reset password.</p>
+                                    </div>
+                                </div>
+                                <button onClick={closeEditUser} className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
+                                    <X className="w-5 h-5" />
+                                </button>
+                            </div>
+                            <form onSubmit={handleSaveUser} className="p-6 space-y-4">
+                                <div className="relative">
+                                    <User className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                                    <input
+                                        type="text"
+                                        value={editForm.name}
+                                        onChange={(e) => setEditForm(p => ({ ...p, name: e.target.value }))}
+                                        placeholder="Full Name"
+                                        className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500"
+                                    />
+                                </div>
+                                <div className="relative">
+                                    <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                                    <input
+                                        type="email"
+                                        value={editForm.email}
+                                        onChange={(e) => setEditForm(p => ({ ...p, email: e.target.value }))}
+                                        placeholder="Email Address"
+                                        className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500"
+                                    />
+                                </div>
+                                <div className="relative">
+                                    <IdCard className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                                    <input
+                                        type="text"
+                                        value={editForm.nsu_id}
+                                        onChange={(e) => setEditForm(p => ({ ...p, nsu_id: e.target.value }))}
+                                        placeholder="NSU ID (optional)"
+                                        className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500"
+                                    />
+                                </div>
+                                <div className="relative">
+                                    <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                                    <input
+                                        type="password"
+                                        value={editForm.password}
+                                        onChange={(e) => setEditForm(p => ({ ...p, password: e.target.value }))}
+                                        placeholder="New Password (leave blank to keep current)"
+                                        className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500"
+                                    />
+                                </div>
+                                {editError && (
+                                    <div className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2 flex items-center gap-2">
+                                        <X className="w-4 h-4" /> {editError}
+                                    </div>
+                                )}
+                                <div className="flex items-center justify-end gap-3 pt-2">
+                                    <button type="button" onClick={closeEditUser} className="px-4 py-2 text-sm font-semibold text-slate-500 hover:bg-slate-100 rounded-xl">Cancel</button>
+                                    <button
+                                        type="submit"
+                                        disabled={editSaving}
+                                        className="px-5 py-2 bg-brand-600 hover:bg-brand-700 disabled:opacity-50 text-white font-bold text-sm rounded-xl shadow-md shadow-brand-500/20 flex items-center gap-2"
+                                    >
+                                        {editSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
+                                        Save Changes
+                                    </button>
+                                </div>
+                            </form>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            {/* Change Password Modal */}
+            <AnimatePresence>
+                {showChangePassword && (
+                    <motion.div
+                        initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+                        className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4"
+                        onClick={() => !pwSaving && setShowChangePassword(false)}
+                    >
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.96, y: 10 }} animate={{ opacity: 1, scale: 1, y: 0 }} exit={{ opacity: 0, scale: 0.96, y: 10 }}
+                            className="bg-white rounded-2xl shadow-2xl max-w-md w-full overflow-hidden"
+                            onClick={(e) => e.stopPropagation()}
+                        >
+                            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                    <div className="w-9 h-9 rounded-xl bg-brand-100 flex items-center justify-center">
+                                        <KeyRound className="w-4 h-4 text-brand-600" />
+                                    </div>
+                                    <div>
+                                        <h3 className="font-bold text-slate-900">Change Admin Password</h3>
+                                        <p className="text-xs text-slate-500">Confirm your current password to set a new one.</p>
+                                    </div>
+                                </div>
+                                <button onClick={() => !pwSaving && setShowChangePassword(false)} className="p-1.5 text-slate-400 hover:text-slate-600 hover:bg-slate-100 rounded-lg">
+                                    <X className="w-5 h-5" />
+                                </button>
+                            </div>
+                            <form onSubmit={handleChangePassword} className="p-6 space-y-4">
+                                <div className="relative">
+                                    <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                                    <input
+                                        type="password"
+                                        value={pwForm.current}
+                                        onChange={(e) => setPwForm(p => ({ ...p, current: e.target.value }))}
+                                        placeholder="Current Password"
+                                        className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500"
+                                    />
+                                </div>
+                                <div className="relative">
+                                    <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                                    <input
+                                        type="password"
+                                        value={pwForm.next}
+                                        onChange={(e) => setPwForm(p => ({ ...p, next: e.target.value }))}
+                                        placeholder="New Password (min 6 chars)"
+                                        className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500"
+                                    />
+                                </div>
+                                <div className="relative">
+                                    <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+                                    <input
+                                        type="password"
+                                        value={pwForm.confirm}
+                                        onChange={(e) => setPwForm(p => ({ ...p, confirm: e.target.value }))}
+                                        placeholder="Confirm New Password"
+                                        className="w-full pl-10 pr-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/30 focus:border-brand-500"
+                                    />
+                                </div>
+                                {pwError && (
+                                    <div className="text-sm text-red-600 bg-red-50 border border-red-100 rounded-lg px-3 py-2 flex items-center gap-2">
+                                        <X className="w-4 h-4" /> {pwError}
+                                    </div>
+                                )}
+                                {pwSuccess && (
+                                    <div className="text-sm text-emerald-700 bg-emerald-50 border border-emerald-100 rounded-lg px-3 py-2 flex items-center gap-2">
+                                        <CheckCircle className="w-4 h-4" /> {pwSuccess}
+                                    </div>
+                                )}
+                                <div className="flex items-center justify-end gap-3 pt-2">
+                                    <button type="button" onClick={() => !pwSaving && setShowChangePassword(false)} className="px-4 py-2 text-sm font-semibold text-slate-500 hover:bg-slate-100 rounded-xl">Cancel</button>
+                                    <button
+                                        type="submit"
+                                        disabled={pwSaving}
+                                        className="px-5 py-2 bg-brand-600 hover:bg-brand-700 disabled:opacity-50 text-white font-bold text-sm rounded-xl shadow-md shadow-brand-500/20 flex items-center gap-2"
+                                    >
+                                        {pwSaving ? <Loader2 className="w-4 h-4 animate-spin" /> : <KeyRound className="w-4 h-4" />}
+                                        Update Password
+                                    </button>
+                                </div>
+                            </form>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
         </div>
     );
 };

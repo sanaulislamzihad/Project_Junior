@@ -71,3 +71,26 @@ export const removeUser = async (userId) => {
     });
     return response.data; // { success }
 };
+
+export const updateUser = async (userId, payload) => {
+    const response = await axios.put(`${API_BASE_URL}/auth/users/${userId}`, payload, {
+        headers: getAuthHeaders(),
+    });
+    return response.data; // { success, user }
+};
+
+export const changeOwnPassword = async (currentPassword, newPassword) => {
+    const response = await axios.post(
+        `${API_BASE_URL}/auth/change-password`,
+        { current_password: currentPassword, new_password: newPassword },
+        { headers: getAuthHeaders() }
+    );
+    return response.data; // { success }
+};
+
+export const getActivity = async () => {
+    const response = await axios.get(`${API_BASE_URL}/auth/activity`, {
+        headers: getAuthHeaders(),
+    });
+    return response.data;
+};
